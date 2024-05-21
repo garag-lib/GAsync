@@ -1,0 +1,12 @@
+{
+    "name": "garag-lib/gasync",
+    "description": "",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "GaragLib\\": "src/GaragLib/"
+        }
+    },
+    "require": {}
+}

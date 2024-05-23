@@ -54,7 +54,7 @@ class GTimer extends GStream {
         }
         if (!$this->repeat) {
             $this->stop();
-            $this->timer->clear();
+            $this->clear();
         }
     }
 

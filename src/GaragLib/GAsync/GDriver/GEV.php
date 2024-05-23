@@ -4,11 +4,12 @@ namespace GaragLib\GAsync\GDriver;
 
 class GEV extends GDriver {
 
-    private $lastDispatch;
     private $streamEventMap;
 
     public function __construct() {
-        $this->lastDispatch = microtime(true);
+        if (!extension_loaded('ev')) {
+            throw new \Exception('Ev extension is not loaded');
+        }
     }
 
     public function getName() {

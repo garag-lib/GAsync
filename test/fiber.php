@@ -5,7 +5,8 @@ require_once(realpath(__DIR__ . '/../vendor/autoload.php'));
 use GaragLib\GAsync\GAsync;
 
 //GAsync::init();
-GAsync::init('GEV');
+//GAsync::init('GEV');
+GAsync::init('GEVENT');
 
 const FILE_SIZE = 1024 * 1024 * 10;
 const BUFFER_SIZE = 1024;
@@ -53,8 +54,8 @@ GAsync::async(function () {
 
 GAsync::async(function () {
     echo '6' . PHP_EOL;
-    //$origen = GAsync::fopen('./original.bin', 'rb');
-    $origen = GAsync::fopen('https://ash-speed.hetzner.com/100MB.bin', 'r');
+    $origen = GAsync::fopen('./original.bin', 'rb');
+    //$origen = GAsync::fopen('https://ash-speed.hetzner.com/100MB.bin', 'r');
     echo '$origen ok' . PHP_EOL;
     $destino = GAsync::fopen('./copy.bin', 'wb');
     echo '$destino ok' . PHP_EOL;

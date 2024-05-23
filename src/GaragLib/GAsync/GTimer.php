@@ -28,12 +28,12 @@ class GTimer extends GStream {
             $this->timer = new \EvTimer($this->duration, $repeat ? $this->duration : 0, [$this, 'eventTimer']);
         }
         //---
-        if (GAsync::getDriver()->getName() == 'GUV') {
+        if (GAsync::getDriver()->getName() == 'GEVENT') {
             $this->start = microtime(true);
             $this->duration = ((float) $duration ) / 1000000.0;
             $this->repeat = $repeat;
-            $this->timer = \uv_timer_init(GAsync::getDriver()->loop);
-            \uv_timer_start($this->timer, $this->duration, $repeat ? $this->duration : 0, [$this, 'eventTimer']);
+            $this->timer = new \Event(GAsync::getDriver()->base, -1, \Event::TIMEOUT | ($this->repeat ? \Event::PERSIST : 0), [$this, 'eventTimer']);
+            $this->timer->add($this->duration);
         }
         //---
         if ($this->repeat) {
@@ -98,22 +98,31 @@ class GTimer extends GStream {
 
     public function stop() {
         $this->stop = true;
-        if (GAsync::getDriver()->getName() != 'GStream') {
+        if (GAsync::getDriver()->getName() == 'GEV') {
             $this->timer->stop();
+        }
+        if (GAsync::getDriver()->getName() == 'GEVENT') {
+            $this->timer->del();
         }
     }
 
     public function start() {
         $this->stop = true;
-        if (GAsync::getDriver()->getName() != 'GStream') {
+        if (GAsync::getDriver()->getName() == 'GEV') {
             $this->timer->start();
+        }
+        if (GAsync::getDriver()->getName() == 'GEVENT') {
+            $this->timer->add($this->duration);
         }
     }
 
     public function clear() {
         $this->stop = true;
-        if (GAsync::getDriver()->getName() != 'GStream') {
+        if (GAsync::getDriver()->getName() == 'GEV') {
             $this->timer->stop();
+        }
+        if (GAsync::getDriver()->getName() == 'GEVENT') {
+            $this->timer->del();
         }
         \GaragLib\GAsync\GAsync::removeIdle($this);
     }

@@ -2,17 +2,20 @@
 
 namespace GaragLib\GAsync\GDriver;
 
-class GEV extends GDriver {
+class GEVENT extends GDriver {
 
-    private $lastDispatch;
+    public $base;
     private $streamEventMap;
 
     public function __construct() {
-        $this->lastDispatch = microtime(true);
+        if (!extension_loaded('event')) {
+            throw new \Exception('Event extension is not loaded');
+        }
+        $this->base = new \EventBase();
     }
 
     public function getName() {
-        return 'GEV';
+        return 'GEVENT';
     }
 
     public function addReadStream(\GaragLib\GResourceStorage $readers, $stream, \GaragLib\GAsync\GStream $assoc) {
@@ -21,7 +24,10 @@ class GEV extends GDriver {
             //---
             $obj = new \stdClass();
             $obj->stream = $stream;
-            $event = new \EvIo($stream, \Ev::READ, [$this, 'eventRead'], $obj);
+            //---
+            $event = new \Event($this->base, $stream, \Event::READ | \Event::PERSIST, [$this, 'eventRead'], $obj);
+            $event->add();
+            //---
             $obj->event = $event;
             //---
             $id = get_resource_id($stream);
@@ -36,7 +42,10 @@ class GEV extends GDriver {
             //---
             $obj = new \stdClass();
             $obj->stream = $stream;
-            $event = new \EvIo($stream, \Ev::WRITE, [$this, 'eventWrite'], $obj);
+            //---
+            $event = new \Event($this->base, $stream, \Event::WRITE | \Event::PERSIST, [$this, 'eventWrite'], $obj);
+            $event->add();
+            //---
             $obj->event = $event;
             //---
             $id = get_resource_id($stream);
@@ -50,8 +59,7 @@ class GEV extends GDriver {
             //---
             $id = get_resource_id($stream);
             $event = $this->streamEventMap[$id][0];
-            $event->stop();
-            $event->clear();
+            $event->del();
             unset($this->streamEventMap[$id][0]);
             if (!count($this->streamEventMap[$id]))
                 unset($this->streamEventMap[$id]);
@@ -65,8 +73,7 @@ class GEV extends GDriver {
             //---
             $id = get_resource_id($stream);
             $event = $this->streamEventMap[$id][1];
-            $event->stop();
-            $event->clear();
+            $event->del();
             unset($this->streamEventMap[$id][1]);
             if (!count($this->streamEventMap[$id]))
                 unset($this->streamEventMap[$id]);
@@ -75,21 +82,21 @@ class GEV extends GDriver {
         }
     }
 
-    public function eventRead($watcher, $revents) {
-        \GaragLib\GAsync\GAsync::readEvent($watcher->data->stream);
+    public function eventRead($stream, $flag, $data) {
+        \GaragLib\GAsync\GAsync::readEvent($data->stream);
     }
 
-    public function eventWrite($watcher, $revents) {
-        \GaragLib\GAsync\GAsync::writeEvent($watcher->data->stream);
+    public function eventWrite($stream, $flag, $data) {
+        \GaragLib\GAsync\GAsync::writeEvent($data->stream);
     }
 
     public function dispatch(\GaragLib\GResourceStorage $readers, \GaragLib\GResourceStorage $writers, $timeoutSec, $timeoutMicro) {
-        \Ev::run(\Ev::RUN_ONCE);
-        //\Ev::run(\Ev::RUN_NOWAIT);
-        /*
-          $diff = microtime(true) - $this->lastDispatch;
-          $this->lastDispatch = microtime(true);
-          usleep(($timeoutSec + $timeoutMicro / 1000000 ) * 1000000);
-         */
+        //$timeout = $timeoutSec + ($timeoutMicro / 1000000.0);
+        //if ($timeout > 0) {
+        $this->base->loop(\EventBase::LOOP_ONCE);
+        //    $this->base->exit($timeout);
+        //} else {
+        //    $this->base->loop();
+        //}
     }
 }

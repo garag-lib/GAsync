@@ -11,6 +11,9 @@ abstract class GDriver {
         if ($name == 'GEV') {
             return new GEV();
         }
+        if ($name == 'GEVENT') {
+            return new GEVENT();
+        }
     }
 
     abstract public function getName();

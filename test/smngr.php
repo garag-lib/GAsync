@@ -5,7 +5,8 @@ require_once(realpath(__DIR__ . '/../vendor/autoload.php'));
 use GaragLib\GAsync\GAsync;
 
 //GAsync::init();
-GAsync::init('GEV');
+//GAsync::init('GEV');
+GAsync::init('GEVENT');
 
 $smngr = new \GaragLib\GSocketManager\GSocketManager();
 

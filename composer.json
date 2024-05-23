@@ -2,7 +2,7 @@
     "name": "garag-lib/gasync",
     "description": "",
     "type": "library",
-    "license": "MIT",
+    "license": "GPL",
     "autoload": {
         "psr-4": {
             "GaragLib\\": "src/GaragLib/"

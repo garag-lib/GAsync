@@ -93,4 +93,8 @@ class GEV extends GDriver {
           usleep(($timeoutSec + $timeoutMicro / 1000000 ) * 1000000);
          */
     }
+
+    public function fork() {
+        \EvLoop::defaultLoop()->loopFork();
+    }
 }

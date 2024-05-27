@@ -5,7 +5,6 @@ namespace GaragLib\GAsync;
 class GStream {
 
     protected $result = null;
-    protected $userData = null;
 
     public function hasResult() {
         return $this->result !== null;
@@ -23,13 +22,5 @@ class GStream {
 
     public function idle() {
         
-    }
-
-    public function setUserData($data) {
-        $this->userData = $data;
-    }
-
-    public function getUserData() {
-        return $this->userData;
     }
 }

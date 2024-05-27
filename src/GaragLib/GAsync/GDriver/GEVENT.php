@@ -99,4 +99,8 @@ class GEVENT extends GDriver {
         //    $this->base->loop();
         //}
     }
+
+    public function fork() {
+        $this->base->reInit();
+    }
 }

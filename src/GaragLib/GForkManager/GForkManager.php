@@ -88,7 +88,7 @@ class GForkManager {
         unset($this->waiting);
     }
 
-    public function isParent() {
+    public function isRoot() {
         return $this->isRoot;
     }
 
@@ -107,8 +107,9 @@ class GForkManager {
         //---
         if (isset($this->callbacks[$type])) {
             $pid = null;
-            if (in_array($sock, $this->pid_sock_map))
+            if (in_array($sock, $this->pid_sock_map)) {
                 $pid = array_search($sock, $this->pid_sock_map);
+            }
             call_user_func($this->callbacks['connect'], $pid, $sock, ...$args);
         }
     }
@@ -122,15 +123,6 @@ class GForkManager {
         //---
     }
 
-    public function processEvents() {
-        //---
-        if (!$this->isRoot)
-            throw new \Exception('not root');
-        //---
-        $this->smngr->processEvents();
-        //---
-    }
-
     public function kill($pid) {
         //---
         if (!$this->isRoot)
@@ -139,7 +131,6 @@ class GForkManager {
         if (is_resource($pid)) {
             $pid = null;
             if (in_array($sock, $this->pid_sock_map)) {
-
                 $pid = array_search($sock, $this->pid_sock_map);
             } else {
                 return false;
@@ -149,6 +140,7 @@ class GForkManager {
         if (isset($this->pid_sock_map[$pid])) {
             $this->smngr->close($this->pid_sock_map[$pid]);
         }
+        //---
         //return posix_kill($pid, SIGTERM);
         //---
     }
@@ -254,6 +246,7 @@ class GForkManager {
                     $this->onConnect($sock1);
                 } else {
                     $this->resetVarsForChild();
+                    \GaragLib\GAsync\GAsync::getDriver()->fork();
                     $this->smngr->addSocket($sock2);
                     $this->running_worker = $worker;
                     $this->running_worker->setSocketManager($this->smngr);
@@ -265,7 +258,7 @@ class GForkManager {
                         
                     }
                     $this->smngr->end();
-                    $this->smngr->loop();
+                    \GaragLib\GAsync\GAsync::run();
                     break;
                 }
                 //---
@@ -276,13 +269,8 @@ class GForkManager {
         }
     }
 
-    public function wait($callback = null) {
-        if ($this->isRoot) {
-            $this->waiting = true;
-            $this->smngr->loop();
-            if ($this->isRoot && $callback) {
-                call_user_func($callback);
-            }
-        }
+    public function wait() {
+        $this->waiting = true;
+        GAsync::run();
     }
 }

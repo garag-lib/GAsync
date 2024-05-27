@@ -27,4 +27,8 @@ abstract class GDriver {
     abstract public function removeWriteStream(\GaragLib\GResourceStorage $writers, $stream);
 
     abstract public function dispatch(\GaragLib\GResourceStorage $readers, \GaragLib\GResourceStorage $writers, $timeoutSec, $timeoutMicro);
+
+    public function fork() {
+        
+    }
 }

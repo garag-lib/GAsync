@@ -263,14 +263,16 @@ class GForkManager {
                 }
                 //---
             }
-        }
-        if ($this->isRoot && $this->waiting && $this->running == 0) {
-            $this->smngr->end();
+            if ($this->waiting && $this->running == 0) {
+                $this->smngr->end();
+            }
         }
     }
 
     public function wait() {
-        $this->waiting = true;
-        GAsync::run();
+        if ($this->isRoot) {
+            $this->waiting = true;
+            GAsync::run();
+        }
     }
 }

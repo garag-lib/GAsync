@@ -65,21 +65,14 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
 
     /**
      * 
-     * @var integer
-     */
-    private $timeout = 1000;
-
-    /**
-     * 
      * @var \GaragLib\GAsync\GTimer
      */
     private $timer;
 
     public function __construct($timeout = 1000) {
-        if ($timeout) {
-            $this->timeout = $timeout;
-            $this->timer = new \GaragLib\GAsync\GTimer($timeout * 1000, true);
-        }
+        if ($timeout === null || $timeout <= 0)
+            $timeout = 1000;
+        $this->timer = new \GaragLib\GAsync\GTimer($timeout * 1000, true);
         $this->sockets = new \GaragLib\GResourceStorage();
         $this->events = new \GaragLib\GResourceStorage();
         $this->connectSockets = new \GaragLib\GResourceStorage();
@@ -528,6 +521,25 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
         }
     }
 
+    protected function checkConnectAndClose() {
+
+        if ($this->connectSockets->count()) {
+            $cevents = $this->connectSockets->toArray();
+            foreach ($cevents as $socket) {
+                $this->handleConnect($socket);
+            }
+        }
+
+        if ($this->closeSockets->count()) {
+            $closeSockets = $this->closeSockets->toArray();
+            foreach ($closeSockets as $socket) {
+                if (!$this->bufferSockets->contains($socket)) {
+                    $this->handleDisconnect($socket);
+                }
+            }
+        }
+    }
+
     public function dispatch($stream = null, int $type = null) {
 
         if ($type == \GaragLib\GAsync\GAsync::STREAM_READ) {
@@ -540,13 +552,6 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
             }
         }
 
-        if ($this->connectSockets->count()) {
-            $cevents = $this->connectSockets->toArray();
-            foreach ($cevents as $socket) {
-                $this->handleConnect($socket);
-            }
-        }
-
         if ($type == \GaragLib\GAsync\GAsync::STREAM_WRITE) {
             $events = $this->events->contains($stream) ? $this->events->offsetGet($stream) : [];
             if (isset($events['write'])) {
@@ -554,20 +559,14 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
             }
         }
 
-        if ($this->closeSockets->count()) {
-            $closeSockets = $this->closeSockets->toArray();
-            foreach ($closeSockets as $socket) {
-                if (!$this->bufferSockets->contains($socket)) {
-                    $this->handleDisconnect($socket);
-                }
-            }
-        }
+        $this->checkConnectAndClose();
 
         return false;
     }
 
     public function idle() {
         $this->call('idle', $this);
+        $this->checkConnectAndClose();
         if ($this->finish && !$this->sockets->count()) {
             $this->timer->clear();
             \GaragLib\GAsync\GAsync::removeIdle($this);

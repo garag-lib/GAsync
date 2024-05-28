@@ -100,7 +100,7 @@ class GForkManager {
         $this->callbacks[$type] = $callback;
     }
 
-    public function call($type, $sock, ...$args) {
+    public function call($type, ...$args) {
         //---
         if (!$this->isRoot)
             throw new \Exception('not root');
@@ -110,7 +110,7 @@ class GForkManager {
             if (in_array($sock, $this->pid_sock_map)) {
                 $pid = array_search($sock, $this->pid_sock_map);
             }
-            call_user_func($this->callbacks['connect'], $pid, $sock, ...$args);
+            call_user_func($this->callbacks[$type], $pid, ...$args);
         }
     }
 
@@ -170,10 +170,11 @@ class GForkManager {
                 $this->pid_terminate[] = $pid;
                 unset($this->pid_sock_map[$pid]);
                 $this->running--;
-                $this->run();
-                return;
+                $ret = $this->run();
+                if ($this->isRoot) {
+                    $this->call('disconnect', $sock, $ret);
+                }
             }
-            $this->call('disconnect', $sock);
         } else {
             $this->running_worker->onDisconnect($sock);
             $this->smngr->end();
@@ -245,11 +246,11 @@ class GForkManager {
                     $this->smngr->addSocket($sock1);
                     $this->onConnect($sock1);
                 } else {
-                    $this->resetVarsForChild();
                     \GaragLib\GAsync\GAsync::getDriver()->fork();
+                    $this->resetVarsForChild();
                     $this->smngr->addSocket($sock2);
                     $this->running_worker = $worker;
-                    $this->running_worker->setSocketManager($this->smngr);
+                    $this->running_worker->setSocketManager($this->smngr, $sock2);
                     gc_collect_cycles();
                     try {
                         $this->onConnect($sock2);
@@ -263,16 +264,20 @@ class GForkManager {
                 }
                 //---
             }
-            if ($this->waiting && $this->running == 0) {
-                $this->smngr->end();
+            if ($this->isRoot) {
+                if ($this->waiting && $this->running == 0) {
+                    $this->smngr->end();
+                }
+                return $this->pid_sock_map;
             }
         }
+        return false;
     }
 
-    public function wait() {
+    public function wait($sec = 0, $usec = 100000) {
         if ($this->isRoot) {
             $this->waiting = true;
-            GAsync::run();
+            \GaragLib\GAsync\GAsync::run($sec, $usec);
         }
     }
 }

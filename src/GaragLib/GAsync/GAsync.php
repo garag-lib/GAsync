@@ -144,7 +144,6 @@ class GAsync {
             if (!static::$fibers->count() && !count(static::$idles)) {
                 static::sendCMD('STOP');
             }
-            //echo 'idle ' . time() . PHP_EOL;
         }
     }
 

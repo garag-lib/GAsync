@@ -101,6 +101,7 @@ class GEVENT extends GDriver {
     }
 
     public function fork() {
+        parent::fork();
         $this->base->reInit();
     }
 }

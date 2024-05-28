@@ -1,6 +1,6 @@
 <?php
 
-namespace GaragLib;
+namespace GaragLib\GForkManager;
 
 abstract class GWorker {
 
@@ -8,13 +8,15 @@ abstract class GWorker {
      * @var GSocket\GSocketManager\GSocketManager
      */
     private $smngr;
+    private $root_sock;
 
-    public function setSocketManager($smgr) {
+    public function setSocketManager($smgr, $sock) {
         $this->smngr = $smgr;
+        $this->root_sock = $sock;
     }
 
-    public function processEvents($timeout = 0) {
-        $this->smngr->processEvents($timeout);
+    public function wait($sec = 0, $usec = 100000) {
+        \GaragLib\GAsync\GAsync::run($sec, $usec);
     }
 
     public function onAccept($sock) {
@@ -37,7 +39,5 @@ abstract class GWorker {
         
     }
 
-    public function run() {
-        
-    }
+    abstract public function run();
 }

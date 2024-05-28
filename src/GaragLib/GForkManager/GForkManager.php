@@ -246,8 +246,6 @@ class GForkManager {
                     $this->onConnect($sock1);
                 } else {
                     //---
-                    echo posix_getpid() . ' START ' . PHP_EOL;
-                    //---
                     \GaragLib\GAsync\GAsync::fork();
                     $this->resetVarsForChild();
                     $this->smngr->fork();
@@ -265,8 +263,6 @@ class GForkManager {
                     }
                     //---
                     $this->smngr->end();
-                    //---
-                    echo posix_getpid() . ' FIN ' . PHP_EOL;
                     //---
                     break;
                 }

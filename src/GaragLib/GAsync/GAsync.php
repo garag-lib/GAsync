@@ -89,7 +89,6 @@ class GAsync {
     }
 
     public static function sendCMD($cmd): void {
-        echo posix_getpid() . ' sendCMD ' . $cmd . PHP_EOL;
         if (fwrite(static::$cmd_stream_B, $cmd . "\n") === false) {
             throw new \Exception('sendCMD ' . $cmd . ' error');
         }

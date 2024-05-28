@@ -95,7 +95,6 @@ class GEV extends GDriver {
     }
 
     public function fork() {
-        parent::fork();
         \EvLoop::defaultLoop()->loopFork();
     }
 }

@@ -2,47 +2,38 @@
 
 require_once(realpath(__DIR__ . '/../vendor/autoload.php'));
 
-use GaragLib\GAsync\GAsync;
-
-GAsync::init();
-
-//GAsync::init('GEV');
-//GAsync::init('GEVENT');
+//GaragLib\GAsync\GAsync::init();
+//GaragLib\GAsync\GAsync::init('GEV');
+GaragLib\GAsync\GAsync::init('GEVENT');
 
 class Work1 extends \GaragLib\GForkManager\GWorker {
 
     public function run() {
-        echo 'Work1...' . PHP_EOL;
-        sleep(2);
-        echo 'Work1...end' . PHP_EOL;
+        sleep(1);
     }
 }
 
 class Work2 extends \GaragLib\GForkManager\GWorker {
 
     public function run() {
-        echo 'Work2...' . PHP_EOL;
-        sleep(4);
-        echo 'Work2...end' . PHP_EOL;
+        sleep(2);
     }
 }
 
 class Work3 extends \GaragLib\GForkManager\GWorker {
 
     public function run() {
-        echo 'Work3...' . PHP_EOL;
-        sleep(16);
-        echo 'Work3...end' . PHP_EOL;
+        sleep(3);
     }
 }
 
 $fork = new \GaragLib\GForkManager\GForkManager(2);
-$fork->add(new Work1());
-$fork->add(new Work2());
-$fork->add(new Work3());
-echo posix_getpid() . ' START' . PHP_EOL;
+$fork->add('\\Work1');
+$fork->add('\\Work2');
+$fork->add('\\Work3');
+echo posix_getpid() . ' START ROOT' . PHP_EOL;
 $fork->run();
 $fork->wait(1, 0);
 if ($fork->isRoot()) {
-    echo posix_getpid() . ' FIN' . PHP_EOL;
+    echo posix_getpid() . ' FIN ROOT' . PHP_EOL;
 }

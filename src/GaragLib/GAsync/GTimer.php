@@ -42,6 +42,10 @@ class GTimer extends GStream {
         //---
     }
 
+    public function getDuration() {
+        return $this->duration;
+    }
+
     public function setCallback($callback) {
         $this->callback = $callback;
     }
@@ -120,9 +124,11 @@ class GTimer extends GStream {
         $this->stop = true;
         if (GAsync::getDriver()->getName() == 'GEV') {
             $this->timer->stop();
+            $this->timer->clear();
         }
         if (GAsync::getDriver()->getName() == 'GEVENT') {
             $this->timer->del();
+            $this->timer->free();
         }
         \GaragLib\GAsync\GAsync::removeIdle($this);
     }

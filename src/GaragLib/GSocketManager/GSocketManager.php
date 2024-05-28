@@ -73,6 +73,7 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
         if ($timeout === null || $timeout <= 0)
             $timeout = 1000;
         $this->timer = new \GaragLib\GAsync\GTimer($timeout * 1000, true);
+        \GaragLib\GAsync\GAsync::addIdle($this);
         $this->sockets = new \GaragLib\GResourceStorage();
         $this->events = new \GaragLib\GResourceStorage();
         $this->connectSockets = new \GaragLib\GResourceStorage();
@@ -80,6 +81,13 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
         $this->bufferReceiveSockets = new \GaragLib\GResourceStorage();
         $this->closeSockets = new \GaragLib\GResourceStorage();
         $this->bufferSocketsSize = new \GaragLib\GResourceStorage();
+    }
+
+    public function fork(): void {
+        $this->timer->clear();
+        \GaragLib\GAsync\GAsync::removeIdle($this);
+        $this->dellAllSockets();
+        $this->timer = new \GaragLib\GAsync\GTimer($this->timer->getDuration(), true);
         \GaragLib\GAsync\GAsync::addIdle($this);
     }
 
@@ -385,7 +393,7 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
         }
         $data = stream_socket_recvfrom($socket, $buffersize, 0);
         if ($data === false) {
-            $this->log('handleReceive', 'error', 'stream_socket_recvfrom');
+            $this->log(posix_getpid() . ' handleReceive', 'error', 'stream_socket_recvfrom');
             $this->close($socket);
             return;
         }

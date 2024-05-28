@@ -7,7 +7,8 @@ class GAsync {
     public const STREAM_READ = 1;
     public const STREAM_WRITE = 2;
 
-    private static $cmd_stream;
+    private static $cmd_stream_A;
+    private static $cmd_stream_B;
 
     /**
      * @var \GaragLib\GResourceStorage
@@ -45,8 +46,22 @@ class GAsync {
         static::$fibers = new \SplObjectStorage();
         static::$idles = new \WeakMap();
         static::$driver = GDriver\GDriver::getDriver($driver);
-        list($stream, static::$cmd_stream) = static::createSocketPair();
-        static::addStream($stream, static::STREAM_READ, new GStreamCommand($stream));
+        list(static::$cmd_stream_A, static::$cmd_stream_B) = static::createSocketPair();
+        static::addStream(static::$cmd_stream_A, static::STREAM_READ, new GStreamCommand(static::$cmd_stream_A));
+    }
+
+    public static function fork(): void {
+        //---
+        static::$readers = new \GaragLib\GResourceStorage();
+        static::$writers = new \GaragLib\GResourceStorage();
+        static::$fibers = new \SplObjectStorage();
+        static::$idles = new \WeakMap();
+        //---
+        static::$driver->fork();
+        //---
+        list(static::$cmd_stream_A, static::$cmd_stream_B) = static::createSocketPair();
+        static::addStream(static::$cmd_stream_A, static::STREAM_READ, new GStreamCommand(static::$cmd_stream_A));
+        //---
     }
 
     public static function getDriver() {
@@ -74,7 +89,8 @@ class GAsync {
     }
 
     public static function sendCMD($cmd): void {
-        if (fwrite(static::$cmd_stream, $cmd . "\n") === false) {
+        echo posix_getpid() . ' sendCMD ' . $cmd . PHP_EOL;
+        if (fwrite(static::$cmd_stream_B, $cmd . "\n") === false) {
             throw new \Exception('sendCMD ' . $cmd . ' error');
         }
     }
@@ -142,7 +158,8 @@ class GAsync {
         while (!static::$stop) {
             static::runOnce($sec, $usec);
             if (!static::$fibers->count() && !count(static::$idles)) {
-                static::sendCMD('STOP');
+                static::$stop = true;
+                static::NOP();
             }
         }
     }

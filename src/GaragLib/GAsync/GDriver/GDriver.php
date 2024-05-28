@@ -29,6 +29,6 @@ abstract class GDriver {
     abstract public function dispatch(\GaragLib\GResourceStorage $readers, \GaragLib\GResourceStorage $writers, $timeoutSec, $timeoutMicro);
 
     public function fork() {
-        \GaragLib\GAsync\GAsync::init(\GaragLib\GAsync\GAsync::getDriver()->getName());
+
     }
 }

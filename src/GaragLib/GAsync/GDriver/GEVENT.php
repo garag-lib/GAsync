@@ -91,17 +91,11 @@ class GEVENT extends GDriver {
     }
 
     public function dispatch(\GaragLib\GResourceStorage $readers, \GaragLib\GResourceStorage $writers, $timeoutSec, $timeoutMicro) {
-        //$timeout = $timeoutSec + ($timeoutMicro / 1000000.0);
-        //if ($timeout > 0) {
         $this->base->loop(\EventBase::LOOP_ONCE);
-        //    $this->base->exit($timeout);
-        //} else {
-        //    $this->base->loop();
-        //}
     }
 
     public function fork() {
-        parent::fork();
         $this->base->reInit();
+        //$this->base = new \EventBase();
     }
 }

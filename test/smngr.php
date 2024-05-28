@@ -4,9 +4,9 @@ require_once(realpath(__DIR__ . '/../vendor/autoload.php'));
 
 use GaragLib\GAsync\GAsync;
 
-//GAsync::init();
+GAsync::init();
 //GAsync::init('GEV');
-GAsync::init('GEVENT');
+//GAsync::init('GEVENT');
 
 $smngr = new \GaragLib\GSocketManager\GSocketManager();
 
@@ -45,21 +45,26 @@ $smngr->setOnDisconnectCallback(function ($sock) use ($smngr, $serversocket, & $
 $time = time();
 $smngr->setOnIdleCallback(function () use ($smngr, $serversocket, & $clients, $time) {
     echo 'idle ' . time() . ' ' . memory_get_usage() / 1024 . PHP_EOL;
+
     if (( time() - $time ) > 5 && count($clients)) {
         foreach ($clients as $index => $clientsocket) {
             $smngr->send($clientsocket, 'HI FROM CLIENT ' . $index);
             $smngr->close($clientsocket);
         }
         $clients = [];
-        $smngr->end();
+        //$smngr->end();
     }
-    /* if ($cont % 10 == 0) {
+
+    /*
+      if (( time() - $time ) > 5 && count($clients)) {
       foreach ($smngr->getSockets() as $sock) {
       if ($sock != $serversocket && !in_array($sock, $clients, true)) {
-      $smngr->send($sock, 'HI FROM SERVER ' . $cont);
+      $smngr->send($sock, 'HI FROM SERVER ');
       }
       }
-      } */
+      $smngr->end();
+      }
+     */
 });
 
 $smngr->setOnReceiveCallback(function ($sock) use ($smngr, $serversocket, & $clients) {
@@ -73,7 +78,7 @@ $smngr->setOnReceiveCallback(function ($sock) use ($smngr, $serversocket, & $cli
 
 //$clients[] = $smngr->createClientSocket('0.0.0.0', $port);
 
-for ($cont = 0; $cont < 250; $cont++) {
+for ($cont = 0; $cont < 5; $cont++) {
     $clients[] = $smngr->createClientSocket('0.0.0.0', $port);
 }
 

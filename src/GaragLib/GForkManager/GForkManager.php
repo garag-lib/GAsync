@@ -45,7 +45,7 @@ class GForkManager {
     private $pid_terminate = null;
 
     /**
-     * @var GWorker
+     * @var GFactoryWorker
      */
     private $running_worker = null;
 
@@ -78,7 +78,6 @@ class GForkManager {
     private function resetVarsForChild() {
         $this->pid = posix_getpid();
         $this->isRoot = false;
-        $this->smngr->dellAllSockets();
         unset($this->max_num_proc);
         unset($this->wait_workers);
         unset($this->pid_terminate);
@@ -114,12 +113,12 @@ class GForkManager {
         }
     }
 
-    public function add(GWorker $worker) {
+    public function add($classname, ...$args) {
         //---
         if (!$this->isRoot)
             throw new \Exception('not root');
         //---
-        $this->wait_workers->attach($worker);
+        $this->wait_workers->attach(new GFactoryWorker($classname, ...$args));
         //---
     }
 
@@ -232,8 +231,8 @@ class GForkManager {
                 }
                 //---
                 $this->running++;
-                $worker = $this->wait_workers->current();
-                $this->wait_workers->detach($worker);
+                $facworker = $this->wait_workers->current();
+                $this->wait_workers->detach($facworker);
                 $this->wait_workers->rewind();
                 //---
                 list($sock1, $sock2) = $this->smngr->createSocketPair();
@@ -246,20 +245,29 @@ class GForkManager {
                     $this->smngr->addSocket($sock1);
                     $this->onConnect($sock1);
                 } else {
-                    \GaragLib\GAsync\GAsync::getDriver()->fork();
+                    //---
+                    echo posix_getpid() . ' START ' . PHP_EOL;
+                    //---
+                    \GaragLib\GAsync\GAsync::fork();
                     $this->resetVarsForChild();
+                    $this->smngr->fork();
+                    //---
                     $this->smngr->addSocket($sock2);
-                    $this->running_worker = $worker;
+                    $this->running_worker = $facworker->getInstance();
                     $this->running_worker->setSocketManager($this->smngr, $sock2);
                     gc_collect_cycles();
+                    //---
                     try {
                         $this->onConnect($sock2);
                         $this->running_worker->run();
                     } catch (\Exception $ex) {
                         
                     }
+                    //---
                     $this->smngr->end();
-                    \GaragLib\GAsync\GAsync::run();
+                    //---
+                    echo posix_getpid() . ' FIN ' . PHP_EOL;
+                    //---
                     break;
                 }
                 //---

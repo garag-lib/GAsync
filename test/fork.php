@@ -4,6 +4,7 @@ require_once(realpath(__DIR__ . '/../vendor/autoload.php'));
 
 //GaragLib\GAsync\GAsync::init();
 GaragLib\GAsync\GAsync::init('GEV');
+
 //GaragLib\GAsync\GAsync::init('GEVENT');
 
 class Work1 extends \GaragLib\GForkManager\GWorker {

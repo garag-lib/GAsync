@@ -20,15 +20,15 @@ fclose($file);
 echo 'file create' . PHP_EOL;
 
 /*
-$timer = new \GaragLib\GAsync\GTimer(1000, true, function ($timer, $diff) {
-            static $cont = 0;
-            $cont++;
-            echo '(' . $cont . ') timer ' . $diff . PHP_EOL;
-            if ($cont >= 100) {
-                $timer->clear();
-            }
-        });
-*/
+  $timer = new \GaragLib\GAsync\GTimer(1000, true, function ($timer, $diff) {
+  static $cont = 0;
+  $cont++;
+  echo '(' . $cont . ') timer ' . $diff . PHP_EOL;
+  if ($cont >= 100) {
+  $timer->clear();
+  }
+  });
+ */
 
 GAsync::async(function () {
     echo '1' . PHP_EOL;

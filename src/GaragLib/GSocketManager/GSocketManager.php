@@ -194,7 +194,7 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
      * @return resource Created server socket.
      * @throws \Exception If there's an error creating the server socket.
      */
-    public function createServerSocket($ip, & $port = 0, $buffersize = self::default_buffer_size, $backlog = null) {
+    public function createServerSocket($ip, & $port = 0, $type = 'tcp', $buffersize = self::default_buffer_size, $backlog = null) {
 
         if ($port == 0) {
             $port = $this->assignDynamicPort($ip);
@@ -211,7 +211,7 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
             ],
         ]);
 
-        $socket = stream_socket_server("tcp://$ip:$port", $errno, $errstr, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $context);
+        $socket = stream_socket_server($type . "://$ip:$port", $errno, $errstr, $type == 'udp' ? STREAM_SERVER_BIND : STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $context);
 
         if (!$socket) {
             throw new \Exception('stream_socket_server error');
@@ -225,7 +225,11 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
             $this->bufferSocketsSize->attach($socket, $buffersize);
         }
 
-        $this->addEvent($socket, 'accept');
+        if ($type !== 'udp') {
+            $this->addEvent($socket, 'accept');
+        } else {
+            $this->addEvent($socket, 'receive');
+        }
 
         return $socket;
     }
@@ -240,7 +244,7 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
      * @return resource Created client socket.
      * @throws \Exception If there's an error creating the client socket.
      */
-    public function createClientSocket($ip, $port, $timeout = 30, $buffersize = self::default_buffer_size) {
+    public function createClientSocket($ip, $port, $type = 'tcp', $timeout = 30, $buffersize = self::default_buffer_size) {
 
         $context = stream_context_create([
             'socket' => [
@@ -252,7 +256,7 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
             ],
         ]);
 
-        $socket = stream_socket_client("tcp://$ip:$port", $errno, $errstr, $timeout, STREAM_CLIENT_CONNECT | STREAM_CLIENT_ASYNC_CONNECT, $context);
+        $socket = stream_socket_client("$type://$ip:$port", $errno, $errstr, $timeout, STREAM_CLIENT_CONNECT | STREAM_CLIENT_ASYNC_CONNECT, $context);
 
         if (!$socket) {
             throw new \Exception('stream_socket_client error');
@@ -266,9 +270,12 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
             $this->bufferSocketsSize->attach($socket, $buffersize);
         }
 
-        $this->addEvent($socket, 'connect');
-
-        \GaragLib\GAsync\GAsync::dispatch(0, 1);
+        if ($type !== 'udp') {
+            $this->addEvent($socket, 'connect');
+            \GaragLib\GAsync\GAsync::dispatch(0, 1);
+        } else {
+            $this->addEvent($socket, 'receive');
+        }
 
         return $socket;
     }
@@ -375,6 +382,7 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
     }
 
     private function handleAccept($socket) {
+        $meta = stream_get_meta_data($socket);
         $clientSocket = stream_socket_accept($socket);
         if ($clientSocket) {
             $this->sockets->attach($clientSocket);
@@ -391,7 +399,8 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
         if ($this->bufferSocketsSize->contains($socket)) {
             $buffersize = $this->bufferSocketsSize->offsetGet($socket);
         }
-        $data = stream_socket_recvfrom($socket, $buffersize, 0);
+        $peer = null;
+        $data = stream_socket_recvfrom($socket, $buffersize, 0, $peer);
         if ($data === false) {
             $this->log(posix_getpid() . ' handleReceive', 'error', 'stream_socket_recvfrom');
             $this->close($socket);
@@ -401,12 +410,17 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
             $this->close($socket);
             return;
         }
-        if ($this->bufferReceiveSockets->contains($socket)) {
-            $this->bufferReceiveSockets->offsetSet($socket, $this->bufferReceiveSockets->offsetGet($socket) . $data);
+        $meta = stream_get_meta_data($socket);
+        if ($meta['stream_type'] === 'udp_socket') {
+            $this->call('receive', $socket, $data, $peer);
         } else {
-            $this->bufferReceiveSockets->attach($socket, $data);
+            if ($this->bufferReceiveSockets->contains($socket)) {
+                $this->bufferReceiveSockets->offsetSet($socket, $this->bufferReceiveSockets->offsetGet($socket) . $data);
+            } else {
+                $this->bufferReceiveSockets->attach($socket, $data);
+            }
+            $this->call('receive', $socket);
         }
-        $this->call('receive', $socket);
     }
 
     private function handleException($socket) {
@@ -447,7 +461,11 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
 
     private function call($type, ...$args) {
         if (isset($this->callbacks[$type])) {
-            call_user_func($this->callbacks[$type], ...$args);
+            $callback = $this->callbacks[$type];
+            \GaragLib\GAsync\GAsync::async(function () use ($callback, $args) {
+                call_user_func($callback, ...$args);
+            });
+            //call_user_func($this->callbacks[$type], ...$args);
         }
     }
 
@@ -484,6 +502,9 @@ class GSocketManager extends \GaragLib\GAsync\GStream {
         $data = null;
         if ($this->bufferReceiveSockets->contains($socket)) {
             $data = $this->bufferReceiveSockets->offsetGet($socket);
+            if ($clear) {
+                $this->bufferReceiveSockets->offsetUnset($socket);
+            }
         }
         if ($clear) {
             $this->bufferReceiveSockets->detach($socket);

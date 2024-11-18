@@ -1,18 +1,18 @@
 <?php
 
+namespace GaragLib\MysqliPDO;
+
 class MysqliPDO {
 
-    /**
-     * @var mysqli
-     */
     private $mysqli = null;
-    private $dbhost = null,
-            $dbport = null,
-            $dbuser = null,
-            $dbpass = null,
-            $dbname = null,
-            $maxIntentos = null,
-            $maxConnections = null;
+    private $dbhost;
+    private $dbport;
+    private $dbuser;
+    private $dbpass;
+    private $dbname;
+    private $maxIntentos;
+    private $maxConnections;
+    private $semKey;
 
     public function __construct($dbhost, $dbport, $dbuser, $dbpass, $dbname, $maxIntentos = null, $maxConnections = null) {
         $this->dbhost = $dbhost;
@@ -20,10 +20,9 @@ class MysqliPDO {
         $this->dbuser = $dbuser;
         $this->dbpass = $dbpass;
         $this->dbname = $dbname;
-        if ($maxIntentos)
-            $this->maxIntentos = $maxIntentos;
-        if ($maxConnections)
-            $this->maxConnections = $maxConnections;
+        $this->maxIntentos = $maxIntentos;
+        $this->maxConnections = $maxConnections;
+        $this->semKey = ftok(__FILE__, 'p'); // Genera una clave única basada en el archivo y un proyecto específico
     }
 
     public function __destruct() {
@@ -38,347 +37,164 @@ class MysqliPDO {
         }
     }
 
-    private function unlook() {
-        if ($this->maxConnections) {
-            $clave = md5(strtoupper($this->dbhost . '-' . $this->dbport . '-' . $this->dbname));
-            //MiSemafoto::liberar('PDO' . $clave);
-        }
-    }
-
     private function look() {
         if ($this->maxConnections) {
-            $clave = md5(strtoupper($this->dbhost . '-' . $this->dbport . '-' . $this->dbname));
+            $semId = sem_get($this->semKey, $this->maxConnections, 0666, 1);
+            if (!$semId) {
+                throw new \Exception('Failed to get semaphore');
+            }
+            if (!sem_acquire($semId, true)) { // Adquiere el semáforo de manera no bloqueante
+                return false;
+            }
+            return true;
+        }
+        return true;
+    }
+
+    private function unlook() {
+        if ($this->maxConnections) {
+            $semId = sem_get($this->semKey);
+            if (!$semId) {
+                throw new \Exception('Failed to get semaphore');
+            }
+            sem_release($semId); // Libera el semáforo
         }
     }
 
     public function connect() {
-        //---
-        $actual_fiber = \Fiber::getCurrent();
-        //---        
-        if (!is_null($this->mysqli))
-            return null;
+        if (!is_null($this->mysqli)) {
+            return;
+        }
         $intentoActual = 0;
         do {
             try {
-                //---
-                $dbhost = $this->dbhost;
-                $dbport = $this->dbport;
-                $dbuser = $this->dbuser;
-                $dbpass = $this->dbpass;
-                $dbname = $this->dbname;
-                //---
-                $this->look();
-                //---
-                $this->mysqli = mysqli_init();
-                $this->mysqli->options(MYSQLI_REPORT_ALL, 1);
-                //$this->mysqli->options(MYSQLI_REPORT_STRICT, 1);
-                //$connection->options(MYSQLI_OPT_CONNECT_TIMEOUT, 3);
-                //$connection->options(MYSQLI_OPT_READ_TIMEOUT, 3);
-                //$connection->options(MYSQLI_INIT_COMMAND, '');
-                $this->mysqli->real_connect($this->dbhost, $this->dbuser, $this->dbpass, $this->dbname, $this->dbport);
-                //$this->mysqli->set_charset("utf8mb4");
-                //---
+                if (!$this->look()) {
+                    throw new \Exception('Max connections reached');
+                }
+                $this->mysqli = new \mysqli($this->dbhost, $this->dbuser, $this->dbpass, $this->dbname, $this->dbport);
+                if ($this->mysqli->connect_error) {
+                    throw new \Exception("Connect Error ({$this->mysqli->connect_errno}) {$this->mysqli->connect_error}");
+                }
+                $this->mysqli->set_charset("utf8mb4");
+                return; // Conexión exitosa, salir del bucle
             } catch (\Exception $e) {
                 $this->mysqli = null;
+                $this->unlook(); // Asegurar la liberación del semáforo si hay un error en la conexión
                 if ($this->maxIntentos) {
                     $intentoActual++;
                     if ($intentoActual >= $this->maxIntentos) {
-                        if ($actual_fiber) {
-                            $actual_fiber->throw($e);
-                        } else {
-                            throw $e;
-                        }
-                    }
-                    if ($actual_fiber) {
-                        \Fiber::suspend();
-                    } else {
-                        sleep(1);
-                    }
-                } else {
-                    if ($actual_fiber) {
-                        $actual_fiber->throw($e);
-                    } else {
                         throw $e;
                     }
+                    sleep(1);
+                } else {
+                    throw $e;
                 }
             }
         } while (is_null($this->mysqli));
     }
 
-    public function prepare($sql) {
+    public function prepare($query) {
         $this->connect();
-        $result = $this->mysqli->prepare($sql);
-        return new \MiPDOStatement($result);
+        $stmt = $this->mysqli->prepare($query);
+        if ($stmt === false) {
+            throw new \Exception("Prepare failed: {$this->mysqli->error}");
+        }
+        return new MysqliStatementPDO($stmt, true);
     }
 
-    public function query($sql, int $fetchMode = null, string $classname = null, array $ctorargs = null) {
+    public function query($query, $fetchMode = \PDO::FETCH_ASSOC, $classnameOrFunc = null, $ctorargs = []) {
         $this->connect();
         $result = $this->mysqli->query($query);
-        return new \MiPDOStatement($result);
-    }
-
-    public function __call($name, $arguments) {
-        if (substr($name, 0, 6) == 'async_') {
-            $method = substr($name, 6);
-            return new \Fiber([$this, $method]);
+        if ($result === false) {
+            throw new \Exception("Query failed: {$this->mysqli->error}");
         }
-        /*
-          $this->connect();
-          switch ($name) {
-          case 'beginTransaction':
-          break;
-          case 'commit':
-          break;
-          case 'rollBack':
-          break;
-          case 'errorCode':
-          break;
-          case 'errorInfo':
-          break;
-          case 'exec':
-          break;
-          case 'inTransaction':
-          break;
-          case 'lastInsertId ':
-          break;
-          case 'quote':
-          break;
-          }
-         */
+        return new MysqliStatementPDO($result, false, $fetchMode, $classnameOrFunc, $ctorargs);
     }
 
-    public static function __callStatic($name, $arguments) {
-        switch ($name) {
-            case '':
-                break;
+    public function exec($query) {
+        $this->connect();
+        if ($this->mysqli->query($query) === false) {
+            throw new \Exception("Exec failed: {$this->mysqli->error}");
+        }
+        return $this->mysqli->affected_rows;
+    }
+
+    public function lastInsertId() {
+        $this->connect();
+        return $this->mysqli->insert_id;
+    }
+
+    public function beginTransaction() {
+        $this->connect();
+        $this->mysqli->begin_transaction();
+    }
+
+    public function commit() {
+        $this->connect();
+        $this->mysqli->commit();
+    }
+
+    public function rollBack() {
+        $this->connect();
+        $this->mysqli->rollback();
+    }
+
+    public function errorCode() {
+        return $this->mysqli->errno;
+    }
+
+    public function errorInfo() {
+        return [$this->mysqli->errno, $this->mysqli->sqlstate, $this->mysqli->error];
+    }
+
+    public function setAttribute($attribute, $value) {
+        $this->connect();
+        return $this->mysqli->options($attribute, $value);
+    }
+
+    public function getAttribute($attribute) {
+        $this->connect();
+        switch ($attribute) {
+            case \PDO::ATTR_SERVER_VERSION:
+                return $this->mysqli->server_version;
+            case \PDO::ATTR_CLIENT_VERSION:
+                return $this->mysqli->client_version;
+            case \PDO::ATTR_SERVER_INFO:
+                return $this->mysqli->server_info;
+            case \PDO::ATTR_PERSISTENT:
+                return false;
+            default:
+                return null;
         }
     }
 
-    /*
+    public function asyncQuery($query) {
+        $this->connect();
+        if (!$this->mysqli->query($query, MYSQLI_ASYNC)) {
+            throw new \Exception("Async query failed: {$this->mysqli->error}");
+        }
+        $this->asyncQueries[] = $this->mysqli;
+    }
 
-      public function multiExecute(...$sqls) {
-      if ($this->emulatePrepares === null) {
-      if ($this->pdo == null)
-      $this->connect();
-      $this->pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
-      $this->pdo->setAttribute(\PDO::ATTR_ORACLE_NULLS, \PDO::NULL_NATURAL);
-      $this->emulatePrepares = true;
-      }
-      $sql = implode(";\r\n", $sqls);
-      $this->exec($sql);
-      }
-
-      public function multiUpdate($sql_update, $arrRows, $keyArray = null, $defaultArr = null) {
-      if ($arrRows && count($arrRows)) {
-      if ($this->emulatePrepares === null) {
-      if ($this->pdo == null)
-      $this->connect();
-      $this->pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
-      $this->pdo->setAttribute(\PDO::ATTR_ORACLE_NULLS, \PDO::NULL_NATURAL);
-      $this->emulatePrepares = true;
-      }
-
-      $numlineas = count($arrRows);
-      $numporlinea = count($arrRows[0]);
-      if ($keyArray)
-      $numporlinea = count($keyArray);
-      $numparametros = $numporlinea * $numlineas;
-
-      $lineasporconsulta = $numlineas;
-      if ($numparametros > static::$MAXNUMPARAMS) {
-      $lineasporconsulta = intval(static::$MAXNUMPARAMS / $numporlinea);
-      if ($lineasporconsulta <= 0)
-      $lineasporconsulta = 1;
-      }
-
-      $stmt = null;
-
-      while (count($arrRows)) {
-      $arrRowsResult = array_splice($arrRows, $lineasporconsulta);
-      $sql = implode(";\r\n", array_fill(0, count($arrRows), $sql_update));
-      $stmt = $this->prepare($sql);
-      if ($stmt) {
-      if ($keyArray === null) {
-      //------------------------------------------------------
-      $cont = 0;
-      foreach ($arrRows as $row) {
-      foreach ($row as $val) {
-      if ($val === null) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_NULL);
-      continue;
-      }
-      if (is_int($val)) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_INT);
-      continue;
-      }
-      $stmt->bindValue(++$cont, $val);
-      }
-      }
-      $stmt->execute();
-      } else {
-      $newparamarr = [];
-      $paramArr = [];
-      foreach ($arrRows as $row) {
-      foreach ($keyArray as $index => $key) {
-      if (is_array($row)) {
-      $paramArr[$index] = isset($row[$key]) ? $row[$key] : ( ( is_array($defaultArr) && isset($defaultArr[$key]) ) ? $defaultArr[$key] : null );
-      } else {
-      $paramArr[$index] = isset($row->{$key}) ? $row->{$key} : ( ( is_array($defaultArr) && isset($defaultArr[$key]) ) ? $defaultArr[$key] : null );
-      }
-      }
-      $newparamarr[] = $paramArr;
-      }
-      //------------------------------------------------------
-      $cont = 0;
-      foreach ($newparamarr as $row) {
-      foreach ($row as $val) {
-      if ($val === null) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_NULL);
-      continue;
-      }
-      if (is_int($val)) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_INT);
-      continue;
-      }
-      $stmt->bindValue(++$cont, $val);
-      }
-      }
-      $stmt->execute();
-      }
-      }
-      $arrRows = $arrRowsResult;
-      }
-
-      return true;
-      }
-
-      return true;
-      }
-
-      public function multiInsert($sql_insert, $sql_params, $arrRows, $keyArray = null) {
-      return $this->multiInsertUpdate($sql_insert, $sql_params, null, $arrRows, $keyArray);
-      }
-
-      public function multiInsertUpdate($sql_insert, $sql_params, $sql_update = null, $arrRows, $keyArray = null, $defaultArr = null) {
-      if ($arrRows && count($arrRows)) {
-      if ($this->emulatePrepares === null) {
-      if ($this->pdo == null)
-      $this->connect();
-      $this->pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
-      $this->emulatePrepares = true;
-      }
-
-      $numlineas = count($arrRows);
-      $numporlinea = count($arrRows[0]);
-      if ($keyArray)
-      $numporlinea = count($keyArray);
-      $numparametros = $numporlinea * $numlineas;
-
-      $lineasporconsulta = $numlineas;
-      if ($numparametros > static::$MAXNUMPARAMS) {
-      $lineasporconsulta = intval(static::$MAXNUMPARAMS / $numporlinea);
-      if ($lineasporconsulta <= 0)
-      $lineasporconsulta = 1;
-      }
-
-      $stmt = null;
-
-      while (count($arrRows)) {
-      $arrRowsResult = array_splice($arrRows, $lineasporconsulta);
-      $sql = $sql_insert . ' VALUES ' . implode(',', array_fill(0, count($arrRows), $sql_params)) . ( $sql_update ? ( ' ' . $sql_update ) : $sql_update );
-      $stmt = $this->prepare($sql);
-      if ($stmt) {
-      if ($keyArray === null) {
-      //------------------------------------------------------
-      $cont = 0;
-      foreach ($arrRows as $row) {
-      foreach ($row as $val) {
-      if ($val === null) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_NULL);
-      continue;
-      }
-      if (is_int($val)) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_INT);
-      continue;
-      }
-      $stmt->bindValue(++$cont, $val);
-      }
-      }
-      $stmt->execute();
-      } else {
-      $newparamarr = [];
-      $paramArr = [];
-      foreach ($arrRows as $row) {
-      foreach ($keyArray as $index => $key) {
-      if (is_array($row))
-      $paramArr[$index] = isset($row[$key]) ? $row[$key] : ( ( is_array($defaultArr) && isset($defaultArr[$key]) ) ? $defaultArr[$key] : null );
-      else
-      $paramArr[$index] = isset($row->{$key}) ? $row->{$key} : ( ( is_array($defaultArr) && isset($defaultArr[$key]) ) ? $defaultArr[$key] : null );
-      }
-      $newparamarr[] = $paramArr;
-      }
-      //------------------------------------------------------
-      $cont = 0;
-      foreach ($newparamarr as $row) {
-      foreach ($row as $val) {
-      if ($val === null) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_NULL);
-      continue;
-      }
-      if (is_int($val)) {
-      $stmt->bindValue(++$cont, $val, \PDO::PARAM_INT);
-      continue;
-      }
-      $stmt->bindValue(++$cont, $val);
-      }
-      }
-      $stmt->execute();
-      }
-      }
-      $arrRows = $arrRowsResult;
-      }
-
-      return true;
-      }
-
-      return true;
-      }
-
-      public function getCampos($campos, $coma = true) {
-      if (count($campos))
-      return ( $coma ? ',' : '' ) . implode(',', $campos);
-      return '';
-      }
-
-      public function getParams($campos, $coma = true) {
-      if (count($campos))
-      return ( $coma ? ',' : '' ) . implode(',', array_fill(0, count($campos), '?'));
-      return '';
-      }
-
-      public function getUpdates($campos, $coma = true, $exclude = null) {
-      if (count($campos)) {
-      $updates = [];
-      foreach ($campos as $name) {
-      if ($exclude != null && in_array($name, $exclude))
-      continue;
-      $updates[] = "$name = VALUES($name)";
-      }
-      return ( $coma ? ',' : '' ) . implode(',', $updates);
-      }
-      return '';
-      }
-
-      public function getMemoryUssage($type = true) {
-      $size = memory_get_usage($type);
-      $unit = array('b', 'kb', 'mb', 'gb', 'tb', 'pb');
-      $amount = @round($size / pow(1024, ($i = floor(log($size, 1024)))), 2) . ' ' . $unit[$i];
-      $size = memory_get_peak_usage($type);
-      $unit = array('b', 'kb', 'mb', 'gb', 'tb', 'pb');
-      $peak = @round($size / pow(1024, ($i = floor(log($size, 1024)))), 2) . ' ' . $unit[$i];
-      return 'amount = ' . $amount . ' peak = ' . $peak;
-      }
-
-
-     */
+    public function fetchAsyncResults() {
+        if (empty($this->asyncQueries)) {
+            return false;
+        }
+        $links = $this->asyncQueries;
+        $errors = $reject = [];
+        if (!mysqli_poll($links, $errors, $reject, 1)) {
+            return false;
+        }
+        foreach ($links as $link) {
+            $result = $link->reap_async_query();
+            if ($result === false) {
+                throw new \Exception("Reap async query failed: {$link->error}");
+            }
+            $this->asyncQueries = array_filter($this->asyncQueries, function ($item) use ($link) {
+                return $item !== $link;
+            });
+            return new MysqliStatementPDO($result, false);
+        }
+        return false;
+    }
 }

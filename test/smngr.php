@@ -18,7 +18,7 @@ $smngr->createServerSocket('0.0.0.0', $portTCP, 'tcp');
 $portUDP = 1111;
 $smngr->createServerSocket('0.0.0.0', $portUDP, 'udp');
 
-$cliente = $smngr->createClientSocket('127.0.0.1', 2008, 'udp');
+$cliente = $smngr->createClientSocket('127.0.0.1', 1111, 'udp');
 
 $clients = [];
 

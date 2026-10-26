@@ -1,56 +1,54 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync;
 
-class GStreamRead extends GStream {
+/** @internal FIFO of read requests for a single stream. */
+class GStreamRead extends GStream
+{
+    private \SplQueue $operations;
 
-    private $stream;
-    private $open;
-    private $length;
-
-    public function __construct($stream, $length = null) {
-        $this->stream = $stream;
-        $this->open = false;
-        $this->length = $length;
-        $this->result = new \SplQueue();
+    public function __construct(private mixed $stream)
+    {
+        $this->operations = new \SplQueue();
     }
 
-    public function hasResult() {
-        return $this->result->count();
+    public function enqueue(GOperation $operation): void
+    {
+        $this->operations->enqueue($operation);
     }
 
-    public function getResult() {
-        return $this->result->dequeue();
+    public function cancel(\Throwable $error): void
+    {
+        while (!$this->operations->isEmpty()) {
+            $this->operations->dequeue()->resolve(null, $error);
+        }
     }
 
-    public function setLength($length) {
-        $this->length = $length;
-    }
-
-    public function dispatch($stream = null, int $type = null) {
-        if ($this->result->count())
-            return false;
-        if (feof($this->stream)) {
-            $this->result->enqueue(false);
+    public function dispatch($stream = null, ?int $type = null): bool
+    {
+        if ($this->operations->isEmpty()) {
             return true;
         }
-        if (!$this->open) {
-            $this->open = true;
-            $this->result->enqueue($this->stream);
-            return false;
-        }
-        if ($this->length) {
-            $temp = \fread($this->stream, $this->length);
-            if ($temp === false) {
-                $this->result->enqueue(false);
+        $operation = $this->operations->bottom();
+        try {
+            if (!is_resource($this->stream)) {
+                throw new \RuntimeException('Read stream was closed');
+            }
+            $data = GAsync::io(fn () => \fread($this->stream, min($operation->input, 65536)));
+            if ($data === false) {
+                throw new \RuntimeException('Stream read failed');
+            }
+            if ($data === '' && !feof($this->stream)) {
                 return false;
             }
-            if (strlen($temp)) {
-                $this->result->enqueue($temp);
-                $temp = null;
-                return false;
-            }
+            $this->operations->dequeue();
+            $operation->resolve($data);
+        } catch (\Throwable $error) {
+            $this->operations->dequeue();
+            $operation->resolve(null, $error);
         }
-        return false;
+        return $this->operations->isEmpty();
     }
 }

@@ -1,34 +1,30 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync;
 
-class GStreamCommand extends GStream {
+/** @internal */
+class GStreamCommand extends GStream
+{
+    private string $buffer = '';
 
-    private $stream;
-
-    public function __construct($stream, $length = null) {
-        $this->stream = $stream;
+    public function __construct(private mixed $stream)
+    {
     }
 
-    public function dispatch($stream = null, int $type = null) {
-        static $buffer = '';
-        $cmd = fread($this->stream, 128);
-        if (strlen($cmd)) {
-            $buffer .= $cmd;
-            $cmds = explode("\n", $buffer);
-            foreach ($cmds as $cmd) {
-                switch ($cmd) {
-                    case 'STOP':
-                        $buffer = '';
-                        GAsync::exit();
-                        break;
-                    case 'NOP':
-                        $buffer = '';
-                        break;
-                    default:
-                        $buffer = $cmd;
-                        break;
-                }
+    public function dispatch($stream = null, ?int $type = null): bool
+    {
+        $data = GAsync::io(fn () => \fread($this->stream, 8192));
+        if ($data === false) {
+            throw new \RuntimeException('Cannot read control socket');
+        }
+        $this->buffer .= $data;
+        while (($end = strpos($this->buffer, "\n")) !== false) {
+            $cmd = substr($this->buffer, 0, $end);
+            $this->buffer = substr($this->buffer, $end + 1);
+            if ($cmd === 'STOP') {
+                GAsync::exit();
             }
         }
         return false;

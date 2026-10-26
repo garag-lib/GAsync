@@ -1,133 +1,163 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib;
 
-class GResourceStorage implements \Countable, \Iterator, \Serializable, \ArrayAccess {
+/** Resource-keyed storage. It does not own or close the stored resources. */
+class GResourceStorage implements \Countable, \Iterator, \ArrayAccess
+{
+    private array $resources = [];
+    private array $resources_data = [];
 
-    private $resources = [];
-    private $resources_data = [];
+    private static function id(mixed $resource): int
+    {
+        // Closed resources still have an identity, needed for unregistering them.
+        if (!is_resource($resource) && gettype($resource) !== 'resource (closed)') {
+            throw new \InvalidArgumentException('Expected a resource');
+        }
+        return get_resource_id($resource);
+    }
 
-    public function toArray($data = false) {
+    public function toArray(bool $data = false): array
+    {
         return $data ? $this->resources_data : $this->resources;
     }
 
-    public function attach($resource, $assoc = null) {
-        $id = get_resource_id($resource);
-        $this->resources[$id] = $resource;
-        $this->resources_data[$id] = $assoc;
+    public function attach($resource, mixed $assoc = null): void
+    {
+        $this->offsetSet($resource, $assoc);
     }
 
-    public function detach($resource) {
-        $id = get_resource_id($resource);
-        unset($this->resources[$id]);
-        unset($this->resources_data[$id]);
+    public function detach($resource): void
+    {
+        $this->offsetUnset(self::id($resource));
     }
 
-    public function contains($resource) {
-        $id = get_resource_id($resource);
-        return isset($this->resources[$id]);
+    public function contains($resource): bool
+    {
+        return isset($this->resources[self::id($resource)]);
     }
 
-    public function offsetGet($resource) {
-        $id = get_resource_id($resource);
+    public function offsetGet(mixed $offset): mixed
+    {
+        $id = is_int($offset) ? $offset : self::id($offset);
         return $this->resources_data[$id] ?? null;
     }
 
-    public function count(): int {
+    public function offsetSet(mixed $offset, mixed $value): void
+    {
+        if (!is_resource($offset)) {
+            throw new \InvalidArgumentException('Expected an open resource');
+        }
+        $id = self::id($offset);
+        $this->resources[$id] = $offset;
+        $this->resources_data[$id] = $value;
+    }
+
+    public function offsetExists(mixed $offset): bool
+    {
+        return isset($this->resources[is_int($offset) ? $offset : self::id($offset)]);
+    }
+
+    public function offsetUnset(mixed $offset): void
+    {
+        $id = is_int($offset) ? $offset : self::id($offset);
+        unset($this->resources[$id], $this->resources_data[$id]);
+    }
+
+    public function count(): int
+    {
         return count($this->resources);
     }
 
-    public function getIterator(): \ArrayIterator {
+    public function getIterator(): \ArrayIterator
+    {
         return new \ArrayIterator($this->resources);
     }
 
-    public function current(): mixed {
+    public function current(): mixed
+    {
         return current($this->resources);
     }
 
-    public function setInfo(mixed $info): void {
-        $key = $this->key();
-        if ($key !== null) {
-            $this->resources_data[$key] = $info;
-        }
-    }
-
-    public function getInfo(): mixed {
-        $key = $this->key();
-        return $key !== null ? $this->resources_data[$key] : null;
-    }
-
-    public function key(): mixed {
+    public function key(): mixed
+    {
         return key($this->resources);
     }
 
-    public function next(): void {
+    public function next(): void
+    {
         next($this->resources);
     }
 
-    public function offsetSet($resource, $assoc = null): void {
-        if (is_null($resource) || !is_resource($resource)) {
-            throw new \InvalidArgumentException('not Resource');
-        }
-        $id = get_resource_id($resource);
-        $this->resources[$id] = $resource;
-        $this->resources_data[$id] = $assoc;
-    }
-
-    public function offsetExists(mixed $offset): bool {
-        if (is_resource($offset)) {
-            $id = get_resource_id($offset);
-            return isset($this->resources[$id]);
-        }
-        return isset($this->resources[$offset]);
-    }
-
-    public function offsetUnset(mixed $offset): void {
-        if (is_resource($offset)) {
-            $id = get_resource_id($offset);
-            unset($this->resources[$id]);
-            unset($this->resources_data[$id]);
-        } else {
-            unset($this->resources[$offset]);
-            unset($this->resources_data[$offset]);
-        }
-    }
-
-    public function rewind(): void {
+    public function rewind(): void
+    {
         reset($this->resources);
     }
 
-    public function serialize(): ?string {
-        return serialize([$this->resources, $this->resources_data]);
-    }
-
-    public function unserialize(string $data): void {
-        [$this->resources, $this->resources_data] = unserialize($data, ['allowed_classes' => false]);
-    }
-
-    public function valid(): bool {
+    public function valid(): bool
+    {
         return key($this->resources) !== null;
     }
 
-    public function removeAll(\SplObjectStorage $storage): int {
-        $removedCount = 0;
-        foreach ($storage as $object) {
-            if ($this->contains($object)) {
-                $this->detach($object);
-                $removedCount++;
-            }
+    public function setInfo(mixed $info): void
+    {
+        if ($this->valid()) {
+            $this->resources_data[$this->key()] = $info;
         }
-        return $removedCount;
     }
 
-    public function removeAllExcept(\SplObjectStorage $storage): int {
-        $removedCount = 0;
-        foreach ($this->resources as $resource) {
-            if (!$storage->contains($resource)) {
+    public function getInfo(): mixed
+    {
+        return $this->valid() ? $this->resources_data[$this->key()] : null;
+    }
+
+    public function removeAll(iterable $storage): int
+    {
+        $count = 0;
+        foreach ($storage as $resource) {
+            if ($this->contains($resource)) {
                 $this->detach($resource);
-                $removedCount++;
+                ++$count;
             }
         }
-        return $removedCount;
+        return $count;
+    }
+
+    public function removeAllExcept(iterable $storage): int
+    {
+        $keep = [];
+        foreach ($storage as $resource) {
+            $keep[self::id($resource)] = true;
+        }
+        $count = 0;
+        foreach ($this->resources as $id => $resource) {
+            if (!isset($keep[$id])) {
+                $this->detach($resource);
+                ++$count;
+            }
+        }
+        return $count;
+    }
+
+    public function __serialize(): array
+    {
+        throw new \LogicException('Open resources cannot be serialized');
+    }
+
+    public function __unserialize(array $data): void
+    {
+        throw new \LogicException('Resources cannot be unserialized');
+    }
+
+    public function serialize(): never
+    {
+        throw new \LogicException('Open resources cannot be serialized');
+    }
+
+    public function unserialize(string $data): never
+    {
+        throw new \LogicException('Resources cannot be unserialized');
     }
 }

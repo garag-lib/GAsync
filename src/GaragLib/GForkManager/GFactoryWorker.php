@@ -1,22 +1,23 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GForkManager;
 
-class GFactoryWorker {
+class GFactoryWorker
+{
+    private array $args;
 
-    private $className;
-    private $args;
-
-    public function __construct($name, ...$args) {
-        $this->className = $name;
+    public function __construct(private string $className, mixed ...$args)
+    {
         $this->args = $args;
     }
 
-    public function getInstance() {
-        if (class_exists($this->className)) {
-            return new $this->className(...$this->args);
-        } else {
-            throw new Exception("La clase {$this->className} no existe.");
+    public function getInstance(): GWorker
+    {
+        if (!is_subclass_of($this->className, GWorker::class)) {
+            throw new \InvalidArgumentException('Worker must extend ' . GWorker::class);
         }
+        return new ($this->className)(...$this->args);
     }
 }

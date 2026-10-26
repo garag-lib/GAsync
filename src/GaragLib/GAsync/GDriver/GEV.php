@@ -1,100 +1,70 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync\GDriver;
 
-class GEV extends GDriver {
+use GaragLib\GAsync\GAsync;
 
-    private $streamEventMap;
+class GEV extends GDriver
+{
+    private object $loop;
+    private array $watchers = [];
+    private array $events = [];
 
-    public function __construct() {
+    public function __construct()
+    {
         if (!extension_loaded('ev')) {
-            throw new \Exception('Ev extension is not loaded');
+            throw new \RuntimeException('The ev extension is required for GEV');
         }
+        $this->loop = new \EvLoop();
     }
 
-    public function getName() {
+    public function getName(): string
+    {
         return 'GEV';
     }
 
-    public function addReadStream(\GaragLib\GResourceStorage $readers, $stream, \GaragLib\GAsync\GStream $assoc) {
-        if (!$readers->contains($stream)) {
-            $readers->attach($stream, $assoc);
-            //---
-            $obj = new \stdClass();
-            $obj->stream = $stream;
-            $event = new \EvIo($stream, \Ev::READ, [$this, 'eventRead'], $obj);
-            $obj->event = $event;
-            //---
-            $id = get_resource_id($stream);
-            $this->streamEventMap[$id][0] = $event;
-            //---
+    protected function watch($stream, int $type): void
+    {
+        $this->watchers[get_resource_id($stream)][$type] = $this->loop->io(
+            $stream,
+            $type === GAsync::STREAM_READ ? \Ev::READ : \Ev::WRITE,
+            function () use ($stream, $type): void {
+                $this->events[] = [$stream, $type];
+            }
+        );
+    }
+
+    protected function unwatch(int $id, int $type): void
+    {
+        if (isset($this->watchers[$id][$type])) {
+            $this->watchers[$id][$type]->stop();
+            $this->watchers[$id][$type]->clear();
+            unset($this->watchers[$id][$type]);
+            if ($this->watchers[$id] === []) {
+                unset($this->watchers[$id]);
+            }
         }
     }
 
-    public function addWriteStream(\GaragLib\GResourceStorage $writers, $stream, \GaragLib\GAsync\GStream $assoc) {
-        if (!$writers->contains($stream)) {
-            $writers->attach($stream, $assoc);
-            //---
-            $obj = new \stdClass();
-            $obj->stream = $stream;
-            $event = new \EvIo($stream, \Ev::WRITE, [$this, 'eventWrite'], $obj);
-            $obj->event = $event;
-            //---
-            $id = get_resource_id($stream);
-            $this->streamEventMap[$id][1] = $event;
-            //---
+    public function fork(): void
+    {
+        $this->loop->loopFork();
+        parent::fork();
+    }
+
+    protected function poll(float $timeout): array
+    {
+        $this->events = [];
+        $timer = $timeout > 0 ? $this->loop->timer($timeout, 0, static function (): void {
+        }) : null;
+        try {
+            $this->loop->run($timeout > 0 ? \Ev::RUN_ONCE : \Ev::RUN_NOWAIT);
+        } finally {
+            $timer?->stop();
+            $timer?->clear();
         }
-    }
-
-    public function removeReadStream(\GaragLib\GResourceStorage $readers, $stream) {
-        if ($readers->contains($stream)) {
-            //---
-            $id = get_resource_id($stream);
-            $event = $this->streamEventMap[$id][0];
-            $event->stop();
-            $event->clear();
-            unset($this->streamEventMap[$id][0]);
-            if (!count($this->streamEventMap[$id]))
-                unset($this->streamEventMap[$id]);
-            //---
-            $readers->detach($stream);
-        }
-    }
-
-    public function removeWriteStream(\GaragLib\GResourceStorage $writers, $stream) {
-        if ($writers->contains($stream)) {
-            //---
-            $id = get_resource_id($stream);
-            $event = $this->streamEventMap[$id][1];
-            $event->stop();
-            $event->clear();
-            unset($this->streamEventMap[$id][1]);
-            if (!count($this->streamEventMap[$id]))
-                unset($this->streamEventMap[$id]);
-            //---
-            $writers->detach($stream);
-        }
-    }
-
-    public function eventRead($watcher, $revents) {
-        \GaragLib\GAsync\GAsync::readEvent($watcher->data->stream);
-    }
-
-    public function eventWrite($watcher, $revents) {
-        \GaragLib\GAsync\GAsync::writeEvent($watcher->data->stream);
-    }
-
-    public function dispatch(\GaragLib\GResourceStorage $readers, \GaragLib\GResourceStorage $writers, $timeoutSec, $timeoutMicro) {
-        \Ev::run(\Ev::RUN_ONCE);
-        //\Ev::run(\Ev::RUN_NOWAIT);
-        /*
-          $diff = microtime(true) - $this->lastDispatch;
-          $this->lastDispatch = microtime(true);
-          usleep(($timeoutSec + $timeoutMicro / 1000000 ) * 1000000);
-         */
-    }
-
-    public function fork() {
-        \EvLoop::defaultLoop()->loopFork();
+        return $this->events;
     }
 }

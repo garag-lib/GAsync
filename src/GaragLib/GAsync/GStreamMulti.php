@@ -1,39 +1,43 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync;
 
-class GStreamMulti extends GStream {
+/** Combines results of explicitly supplied GStream objects. */
+class GStreamMulti extends GStream
+{
+    private array $gstreams = [];
 
-    private $gstreams;
-    private $returnAll;
-
-    public function __construct($stream, $returnAll = false) {
-        $this->gstreams = [];
-        $this->stream = $stream;
-        $this->returnAll = $returnAll;
+    public function __construct(mixed $stream, private bool $returnAll = false)
+    {
+        GAsync::assertStream($stream);
     }
 
-    public function addGStream($gstream) {
+    public function addGStream(GStream $gstream): void
+    {
         $this->gstreams[] = $gstream;
     }
 
-    public function hasResult() {
-        foreach ($this->gstreams as $gstream) {
-            if (!$gstream->hasResult()) {
+    public function hasResult(): bool
+    {
+        if ($this->gstreams === []) {
+            return false;
+        }
+        foreach ($this->gstreams as $stream) {
+            if (!$stream->hasResult()) {
                 return false;
             }
         }
         return true;
     }
 
-    public function getResult() {
-        if ($this->returnAll) {
-            $ret = [];
-            foreach ($this->gstreams as $gstream) {
-                $ret[] = $gstream->getResult();
-            }
-            return $ret;
+    public function getResult(): mixed
+    {
+        if (!$this->hasResult()) {
+            throw new \LogicException('Results are not ready');
         }
-        return $this->gstreams[0]->getResult();
+        $results = array_map(static fn (GStream $stream) => $stream->getResult(), $this->gstreams);
+        return $this->returnAll ? $results : $results[0];
     }
 }

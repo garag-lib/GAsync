@@ -1,54 +1,65 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync;
 
-class GStreamWrite extends GStream {
+/** @internal FIFO of complete-buffer write requests for a single stream. */
+class GStreamWrite extends GStream
+{
+    private \SplQueue $operations;
 
-    private $stream;
-    private $open;
-    private $data;
-
-    public function __construct($stream, $open = false, $data = null) {
-        $this->stream = $stream;
-        $this->open = $open;
-        $this->data = $data;
-        $this->result = new \SplQueue();
+    public function __construct(private mixed $stream)
+    {
+        $this->operations = new \SplQueue();
     }
 
-    public function hasResult() {
-        return $this->result->count();
+    public function enqueue(GOperation $operation): void
+    {
+        $this->operations->enqueue($operation);
     }
 
-    public function getResult() {
-        return $this->result->dequeue();
+    public function hasImmediateWork(): bool
+    {
+        return !$this->operations->isEmpty() && $this->operations->bottom()->input === '';
     }
 
-    public function setData($data) {
-        $this->data .= $data;
-    }
-
-    public function dispatch($stream = null, int $type = null) {
-        if ($this->result->count())
-            return true;
-        if (!$this->open) {
-            $this->open = true;
-            $this->result->enqueue($this->stream);
-            return true;
+    public function cancel(\Throwable $error): void
+    {
+        while (!$this->operations->isEmpty()) {
+            $this->operations->dequeue()->resolve(null, $error);
         }
-        $write = fwrite($this->stream, $this->data);
-        if ($write === false) {
-            $this->result->enqueue(false);
+    }
+
+    public function dispatch($stream = null, ?int $type = null): bool
+    {
+        if ($this->operations->isEmpty()) {
             return true;
         }
-        if ($write === 0) {
-            return false;
+        $operation = $this->operations->bottom();
+        try {
+            if (!is_resource($this->stream)) {
+                throw new \RuntimeException('Write stream was closed');
+            }
+            $remaining = strlen($operation->input) - $operation->offset;
+            if ($remaining > 0) {
+                $written = GAsync::io(fn () => \fwrite($this->stream, substr($operation->input, $operation->offset, 65536)));
+                if ($written === false) {
+                    throw new \RuntimeException('Stream write failed');
+                }
+                if ($written === 0) {
+                    return false;
+                }
+                $operation->offset += $written;
+            }
+            if ($operation->offset === strlen($operation->input)) {
+                $this->operations->dequeue();
+                $operation->resolve($operation->offset);
+            }
+        } catch (\Throwable $error) {
+            $this->operations->dequeue();
+            $operation->resolve(null, $error);
         }
-        if ($write < strlen($this->data)) {
-            $this->data = substr($this->data, $write);
-            return false;
-        }
-        $this->data = '';
-        $this->result->enqueue($write);
-        return true;
+        return $this->operations->isEmpty();
     }
 }

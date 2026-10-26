@@ -1,26 +1,31 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync;
 
-class GStream {
+class GStream
+{
+    protected mixed $result = null;
 
-    protected $result = null;
-
-    public function hasResult() {
+    public function hasResult(): bool
+    {
         return $this->result !== null;
     }
 
-    public function getResult() {
-        $temp = $this->result;
+    public function getResult(): mixed
+    {
+        $value = $this->result;
         $this->result = null;
-        return $temp;
+        return $value;
     }
 
-    public function dispatch($stream = null, int $type = null) {
-        
+    public function dispatch($stream = null, ?int $type = null): bool
+    {
+        return false;
     }
 
-    public function idle() {
-        
+    public function idle(): void
+    {
     }
 }

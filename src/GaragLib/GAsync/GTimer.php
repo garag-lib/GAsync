@@ -1,135 +1,91 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync;
 
-class GTimer extends GStream {
+class GTimer extends GStream
+{
+    private float $started;
+    private float $deadline;
+    private float $duration;
+    private bool $active = false;
+    private ?\Closure $callback;
 
-    private $start;
-    private $duration;
-    private $repeat = false;
-    private $callback;
-    private $stop = false;
-    private $timer;
-
-    public function __construct($duration, $repeat, $callback = null) {
-        //---
-        $this->callback = $callback;
-        //---
-        if (GAsync::getDriver()->getName() == 'GStream') {
-            $this->start = microtime(true);
-            $this->duration = ((float) $duration ) / 1000000.0;
-            $this->repeat = $repeat;
+    /** Duration is expressed in microseconds; getDuration() returns seconds. */
+    public function __construct(int|float $duration, private bool $repeat, ?callable $callback = null)
+    {
+        if (!is_finite((float) $duration) || $duration < 0 || ($repeat && $duration <= 0)) {
+            throw new \InvalidArgumentException('Timer duration must be finite and nonnegative (positive for repeating timers)');
         }
-        //---
-        if (GAsync::getDriver()->getName() == 'GEV') {
-            $this->start = microtime(true);
-            $this->duration = ((float) $duration ) / 1000000.0;
-            $this->repeat = $repeat;
-            $this->timer = new \EvTimer($this->duration, $repeat ? $this->duration : 0, [$this, 'eventTimer']);
-        }
-        //---
-        if (GAsync::getDriver()->getName() == 'GEVENT') {
-            $this->start = microtime(true);
-            $this->duration = ((float) $duration ) / 1000000.0;
-            $this->repeat = $repeat;
-            $this->timer = new \Event(GAsync::getDriver()->base, -1, \Event::TIMEOUT | ($this->repeat ? \Event::PERSIST : 0), [$this, 'eventTimer']);
-            $this->timer->add($this->duration);
-        }
-        //---
-        if ($this->repeat) {
-            \GaragLib\GAsync\GAsync::addIdle($this);
-        }
-        //---
+        $this->duration = $duration / 1e6;
+        $this->setCallback($callback);
+        $this->start();
     }
 
-    public function getDuration() {
+    public function getDuration(): float
+    {
         return $this->duration;
     }
 
-    public function setCallback($callback) {
-        $this->callback = $callback;
+    public function setCallback(?callable $callback): void
+    {
+        $this->callback = $callback === null ? null : \Closure::fromCallable($callback);
     }
 
-    public function eventTimer() {
-        $this->start = microtime(true);
-        $this->result = microtime(true) - $this->start;
-        if ($this->callback) {
-            call_user_func($this->callback, $this, $this->getResult());
-        }
-        if (!$this->repeat) {
-            $this->stop();
-            $this->clear();
-        }
+    public function remaining(): float
+    {
+        return max(0.0, $this->deadline - hrtime(true) / 1e9);
     }
 
-    public function hasResult() {
-        //---
-        $drivername = GAsync::getDriver()->getName();
-        //---
-        if ($drivername == 'GStream') {
-            if ($this->stop) {
-                return false;
-            }
-            $diff = microtime(true) - $this->start;
-            if ($diff >= $this->duration) {
-                $this->result = $diff;
-                return true;
-            }
-            return false;
-        }
-        //---
-        return parent::hasResult();
-        //---
+    public function start(): void
+    {
+        $this->result = null;
+        $this->started = hrtime(true) / 1e9;
+        $this->deadline = $this->started + $this->duration;
+        $this->active = true;
+        GAsync::registerTimer($this);
     }
 
-    public function idle() {
+    public function stop(): void
+    {
+        $this->active = false;
+        GAsync::unregisterTimer($this);
+    }
+
+    public function clear(): void
+    {
+        $this->stop();
+        $this->callback = null;
+        $this->result = null;
+    }
+
+    public function eventTimer(): void
+    {
         $this->dispatch();
     }
 
-    public function dispatch($stream = null, int $type = null) {
-        if (GAsync::getDriver()->getName() == 'GStream') {
-            if (!$this->stop && $this->hasResult()) {
-                $this->start = microtime(true);
-                if ($this->callback) {
-                    call_user_func($this->callback, $this, $this->getResult());
-                }
-                if (!$this->repeat) {
-                    $this->stop = true;
-                }
-            }
-        }
+    public function idle(): void
+    {
+        $this->dispatch();
     }
 
-    public function stop() {
-        $this->stop = true;
-        if (GAsync::getDriver()->getName() == 'GEV') {
-            $this->timer->stop();
+    public function dispatch($stream = null, ?int $type = null): bool
+    {
+        if (!$this->active || $this->remaining() > 0) {
+            return false;
         }
-        if (GAsync::getDriver()->getName() == 'GEVENT') {
-            $this->timer->del();
+        $now = hrtime(true) / 1e9;
+        $this->result = $now - $this->started;
+        if ($this->repeat) {
+            $this->started = $now;
+            $this->deadline = $now + $this->duration;
+        } else {
+            $this->stop();
         }
-    }
-
-    public function start() {
-        $this->stop = true;
-        if (GAsync::getDriver()->getName() == 'GEV') {
-            $this->timer->start();
+        if ($this->callback !== null) {
+            ($this->callback)($this, $this->getResult());
         }
-        if (GAsync::getDriver()->getName() == 'GEVENT') {
-            $this->timer->add($this->duration);
-        }
-    }
-
-    public function clear() {
-        $this->stop = true;
-        if (GAsync::getDriver()->getName() == 'GEV') {
-            $this->timer->stop();
-            $this->timer->clear();
-        }
-        if (GAsync::getDriver()->getName() == 'GEVENT') {
-            $this->timer->del();
-            $this->timer->free();
-        }
-        \GaragLib\GAsync\GAsync::removeIdle($this);
+        return false;
     }
 }

@@ -1,87 +1,38 @@
-const fs = require('fs').promises;
-const {createWriteStream, open} = require('fs');
-const path = require('path');
-
-// Constants
-const FILE_SIZE = 1024 * 1024 * 10;
-const BUFFER_SIZE = 1024;
-
-function createFile() {
-    console.log(`create file ${FILE_SIZE / 1024 / 1024} MB`);
-    const file = createWriteStream('original.bin');
-    for (let cont = 0, num = FILE_SIZE / BUFFER_SIZE; cont < num; cont++) {
-        file.write(Buffer.alloc(BUFFER_SIZE, Math.random().toString(36).substring(2)));
-    }
-    file.end();
-    console.log('file created');
-}
-
-function sleep(time) {
-    return new Promise(resolve => setTimeout(resolve, time * 1000));
-}
-
-async function asyncTasks1() {
-    console.log('1');
-    await (async () => {
-        console.log('2');
-        await (async () => {
-            console.log('3');
-        })();
-    })();
-}
-
-async function asyncTasks2() {
-    console.log('4');
-    console.log('***', await sleep(2));
-    console.log('4.2');
-}
-
-async function asyncTasks3() {
-    console.log('5');
-    console.log('***', await sleep(3));
-    console.log('5.3');
-}
-
-async function copyFile() {
-    console.log('6');
-    const origen = await fs.open('./original.bin', 'r');
-    console.log('$origen ok');
-    const destino = await fs.open('./copy.bin', 'w');
-    console.log('$destino ok');
-    let cont = 0;
-    let bytesRead;
-    let buffer = Buffer.alloc(BUFFER_SIZE * BUFFER_SIZE);
-
-    while ((bytesRead = (await origen.read(buffer, 0, buffer.length, null)).bytesRead) > 0) {
-        cont++;
-        console.log(`${cont} leido: ${bytesRead}`);
-        await destino.write(buffer.slice(0, bytesRead), 0, bytesRead);
-        console.log(`${cont} escrito: ${bytesRead}`);
-    }
-
-    await origen.close();
-    await destino.close();
-}
-
-function startTimer() {
-    let cont = 0;
-    const interval = setInterval(() => {
-        cont++;
-        console.log(`(${cont}) timer`);
-        if (cont >= 10) {
-            clearInterval(interval);
-        }
-    }, 1);
-}
+// Optional Node.js comparison: the same bounded copy as examples/fibers.php.
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { createHash } = require('node:crypto');
 
 (async () => {
-    createFile();
-    startTimer();
-    asyncTasks1();
-    await copyFile();
-    asyncTasks2();
-    asyncTasks3();
-    const memoryUsage = process.memoryUsage();
-    console.log('\nmemory_get_peak_usage:', (memoryUsage.heapUsed / 1024 / 1024).toFixed(2), 'MB');
-    console.log('memory_get_peak_usage total:', (memoryUsage.rss / 1024 / 1024).toFixed(2), 'MB');
-})();
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gasync-node-'));
+    let source;
+    let destination;
+    try {
+        const payload = Buffer.alloc(1024 * 1024, 'x');
+        await fs.writeFile(path.join(dir, 'original.bin'), payload);
+        source = await fs.open(path.join(dir, 'original.bin'), 'r');
+        destination = await fs.open(path.join(dir, 'copy.bin'), 'w');
+        const buffer = Buffer.alloc(65536);
+        const timer = new Promise(resolve => setTimeout(resolve, 10));
+        while (true) {
+            const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+            if (bytesRead === 0) break;
+            let offset = 0;
+            while (offset < bytesRead) {
+                const { bytesWritten } = await destination.write(buffer, offset, bytesRead - offset, null);
+                if (bytesWritten === 0) throw new Error('Write made no progress');
+                offset += bytesWritten;
+            }
+        }
+        await timer;
+        const copied = await fs.readFile(path.join(dir, 'copy.bin'));
+        const hash = data => createHash('sha256').update(data).digest('hex');
+        if (hash(copied) !== hash(payload)) throw new Error('Copy failed');
+        console.log('Copied 1 MiB; SHA-256 verified');
+    } finally {
+        await source?.close();
+        await destination?.close();
+        await fs.rm(dir, { recursive: true, force: true });
+    }
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,467 +1,468 @@
 <?php
 
+declare(strict_types=1);
+
 namespace GaragLib\GAsync;
 
-class GAsync {
+use GaragLib\GResourceStorage;
+use GaragLib\GAsync\GDriver\GDriver;
 
+class GAsync
+{
     public const STREAM_READ = 1;
     public const STREAM_WRITE = 2;
 
-    private static $cmd_stream_A;
-    private static $cmd_stream_B;
+    private static mixed $cmd_stream_A = null;
+    private static mixed $cmd_stream_B = null;
+    private static ?GResourceStorage $readers = null;
+    private static ?GResourceStorage $writers = null;
+    private static ?\SplObjectStorage $fibers = null;
+    private static ?\SplObjectStorage $idles = null;
+    private static ?\SplObjectStorage $timers = null;
+    private static ?\SplQueue $ready = null;
+    private static ?GDriver $driver = null;
+    private static bool $stop = false;
+    private static bool $running = false;
+    private static bool $ticking = false;
 
-    /**
-     * @var \GaragLib\GResourceStorage
-     */
-    private static $readers;
-
-    /**
-     * @var \GaragLib\GResourceStorage
-     */
-    private static $writers;
-
-    /**
-     * @var \SplObjectStorage
-     */
-    private static $fibers;
-
-    /**
-     * @var \WeakMap
-     */
-    private static $idles;
-
-    /**
-     * @var GDriver\GDriver
-     */
-    private static $driver;
-
-    /**
-     * @var bool
-     */
-    private static $stop = false;
-
-    public static function init($driver = null): void {
-        static::$readers = new \GaragLib\GResourceStorage();
-        static::$writers = new \GaragLib\GResourceStorage();
-        static::$fibers = new \SplObjectStorage();
-        static::$idles = new \WeakMap();
-        static::$driver = GDriver\GDriver::getDriver($driver);
-        list(static::$cmd_stream_A, static::$cmd_stream_B) = static::createSocketPair();
-        static::addStream(static::$cmd_stream_A, static::STREAM_READ, new GStreamCommand(static::$cmd_stream_A));
-    }
-
-    public static function fork(): void {
-        //---
-        static::$readers = new \GaragLib\GResourceStorage();
-        static::$writers = new \GaragLib\GResourceStorage();
-        static::$fibers = new \SplObjectStorage();
-        static::$idles = new \WeakMap();
-        //---
-        static::$driver->fork();
-        //---
-        list(static::$cmd_stream_A, static::$cmd_stream_B) = static::createSocketPair();
-        static::addStream(static::$cmd_stream_A, static::STREAM_READ, new GStreamCommand(static::$cmd_stream_A));
-        //---
-    }
-
-    public static function getDriver() {
-        return static::$driver;
-    }
-
-    private static function prepareSocket($socket, int $buffersize): void {
-        stream_set_blocking($socket, 0);
-        stream_set_read_buffer($socket, $buffersize);
-        stream_set_write_buffer($socket, $buffersize);
-    }
-
-    private static function createSocketPair(int $buffersize = 128) {
-        $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-        if (!$sockets) {
-            throw new \Exception('stream_socket_pair error');
+    public static function init(?string $driver = null): void
+    {
+        if (self::$running || self::$ticking) {
+            throw new \LogicException('Cannot initialize a running event loop');
         }
-        static::prepareSocket($sockets[0], $buffersize);
-        static::prepareSocket($sockets[1], $buffersize);
-        return $sockets;
-    }
-
-    public static function NOP(): void {
-        static::sendCMD('NOP');
-    }
-
-    public static function sendCMD($cmd): void {
-        if (fwrite(static::$cmd_stream_B, $cmd . "\n") === false) {
-            throw new \Exception('sendCMD ' . $cmd . ' error');
+        if (self::$ready !== null && (!self::$ready->isEmpty() || self::$fibers->count() || self::hasOperations())) {
+            throw new \LogicException('Drain or close pending operations before reinitializing the event loop');
         }
+        $backend = GDriver::getDriver($driver);
+        self::reset($backend);
     }
 
-    //--------------------------------------------------------------------------
-
-    public static function addStream($stream, int $type, $assoc) {
-        if ($type == GAsync::STREAM_READ || $type === null) {
-            static::$driver->addReadStream(static::$readers, $stream, $assoc);
+    private static function reset(GDriver $driver): void
+    {
+        self::$driver?->close();
+        foreach ([self::$cmd_stream_A, self::$cmd_stream_B] as $stream) {
+            if (is_resource($stream)) {
+                \fclose($stream);
+            }
         }
-        if ($type == GAsync::STREAM_WRITE || $type === null) {
-            static::$driver->addWriteStream(static::$writers, $stream, $assoc);
+        if (self::$timers !== null) {
+            foreach (clone self::$timers as $timer) {
+                $timer->clear();
+            }
+        }
+        self::$readers = new GResourceStorage();
+        self::$writers = new GResourceStorage();
+        self::$fibers = new \SplObjectStorage();
+        self::$idles = new \SplObjectStorage();
+        self::$timers = new \SplObjectStorage();
+        self::$ready = new \SplQueue();
+        self::$driver = $driver;
+        self::$stop = self::$running = self::$ticking = false;
+        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+        if ($pair === false) {
+            throw new \RuntimeException('Cannot create event loop control sockets');
+        }
+        [self::$cmd_stream_A, self::$cmd_stream_B] = $pair;
+        foreach ($pair as $stream) {
+            stream_set_blocking($stream, false);
+        }
+        self::addStream($pair[0], self::STREAM_READ, new GStreamCommand($pair[0]));
+    }
+
+    /** Call only in the child immediately after pcntl_fork(). */
+    public static function fork(): void
+    {
+        $name = self::getDriver()->getName();
+        self::$driver->fork();
+        self::reset(GDriver::getDriver($name));
+    }
+
+    public static function getDriver(): GDriver
+    {
+        if (self::$driver === null) {
+            self::init();
+        }
+        return self::$driver;
+    }
+
+    /** Convert a PHP I/O warning into an exception, restoring the caller's handler. */
+    public static function io(callable $call): mixed
+    {
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new \RuntimeException($message);
+        }, E_WARNING);
+        try {
+            return $call();
+        } finally {
+            restore_error_handler();
         }
     }
 
-    public static function removeStream($stream, int $type = null) {
-        if ($type == GAsync::STREAM_READ || $type === null) {
-            static::$driver->removeReadStream(static::$readers, $stream);
-        }
-        if ($type == GAsync::STREAM_WRITE || $type === null) {
-            static::$driver->removeWriteStream(static::$writers, $stream);
+    public static function assertStream(mixed $stream): void
+    {
+        if (!is_resource($stream) || get_resource_type($stream) !== 'stream') {
+            throw new \InvalidArgumentException('Expected an open stream resource');
         }
     }
 
-    public static function dispatch($timeoutSec, $timeoutMicro) {
-        static::$driver->dispatch(static::$readers, static::$writers, $timeoutSec, $timeoutMicro);
+    public static function NOP(): void
+    {
+        self::sendCMD('NOP');
     }
 
-    public static function readEvent($stream) {
-        //---
-        if (static::$readers->contains($stream)) {
-            $gstream = static::$readers->offsetGet($stream);
-            if ($gstream) {
-                if ($gstream->dispatch($stream, static::STREAM_READ)) {
-                    static::removeStream($stream, static::STREAM_READ);
+    public static function sendCMD(string $cmd): void
+    {
+        self::getDriver();
+        if (!in_array($cmd, ['NOP', 'STOP'], true)) {
+            throw new \InvalidArgumentException('Unknown event loop command');
+        }
+        if ($cmd === 'STOP') {
+            self::$stop = true;
+        }
+        // A full nonblocking control pipe already contains a wakeup.
+        self::io(fn () => \fwrite(self::$cmd_stream_B, "NOP\n"));
+    }
+
+    public static function addStream($stream, ?int $type, GStream $assoc): void
+    {
+        self::getDriver();
+        self::assertStream($stream);
+        if ($type !== null && $type !== self::STREAM_READ && $type !== self::STREAM_WRITE) {
+            throw new \InvalidArgumentException('Invalid stream direction');
+        }
+        if ($type === null || $type === self::STREAM_READ) {
+            self::$driver->addReadStream(self::$readers, $stream, $assoc);
+        }
+        if ($type === null || $type === self::STREAM_WRITE) {
+            self::$driver->addWriteStream(self::$writers, $stream, $assoc);
+        }
+    }
+
+    public static function removeStream($stream, ?int $type = null): void
+    {
+        self::getDriver();
+        if ($type !== null && $type !== self::STREAM_READ && $type !== self::STREAM_WRITE) {
+            throw new \InvalidArgumentException('Invalid stream direction');
+        }
+        foreach ([self::STREAM_READ => self::$readers, self::STREAM_WRITE => self::$writers] as $direction => $storage) {
+            if ($type === null || $type === $direction) {
+                $watcher = $storage[$stream];
+                if ($watcher instanceof GStreamRead || $watcher instanceof GStreamWrite) {
+                    $watcher->cancel(new \RuntimeException('Stream unregistered with pending operations'));
                 }
+            }
+        }
+        if ($type === null || $type === self::STREAM_READ) {
+            self::$driver->removeReadStream(self::$readers, $stream);
+        }
+        if ($type === null || $type === self::STREAM_WRITE) {
+            self::$driver->removeWriteStream(self::$writers, $stream);
+        }
+    }
+
+    public static function dispatch(int $timeoutSec, int $timeoutMicro): void
+    {
+        self::getDriver();
+        if ($timeoutSec < 0 || $timeoutMicro < 0) {
+            throw new \InvalidArgumentException('Negative dispatch timeout');
+        }
+        self::$driver->dispatch(self::$readers, self::$writers, $timeoutSec, $timeoutMicro);
+    }
+
+    public static function readEvent($stream): void
+    {
+        self::streamEvent($stream, self::STREAM_READ);
+    }
+
+    public static function writeEvent($stream): void
+    {
+        self::streamEvent($stream, self::STREAM_WRITE);
+    }
+
+    private static function streamEvent($stream, int $type): void
+    {
+        $storage = $type === self::STREAM_READ ? self::$readers : self::$writers;
+        $watcher = $storage[$stream];
+        if ($watcher !== null && $watcher->dispatch($stream, $type) && $storage[$stream] === $watcher) {
+            self::removeStream($stream, $type);
+        }
+    }
+
+    public static function defer(callable $callback): void
+    {
+        self::getDriver();
+        self::$ready->enqueue(\Closure::fromCallable($callback));
+    }
+
+    private static function drainReady(): void
+    {
+        // Snapshot for fairness: callbacks queued by these callbacks run next turn.
+        $count = self::$ready->count();
+        for ($i = 0; $i < $count && !self::$stop; ++$i) {
+            (self::$ready->dequeue())();
+        }
+    }
+
+    private static function tick(int $sec, int $usec): void
+    {
+        if ($sec < 0 || $usec < 0) {
+            throw new \InvalidArgumentException('Negative loop timeout');
+        }
+        self::$ticking = true;
+        try {
+            self::drainReady();
+            if (self::$stop) {
                 return;
             }
+            foreach (clone self::$timers as $timer) {
+                $timer->dispatch();
+            }
+            foreach (clone self::$idles as $idle) {
+                if (self::$idles->offsetExists($idle)) {
+                    $callback = self::$idles[$idle];
+                    $callback !== null ? $callback($idle) : $idle->idle();
+                }
+            }
+            self::poll($sec, $usec);
+            if (self::$stop) {
+                return;
+            }
+            foreach (clone self::$timers as $timer) {
+                $timer->dispatch();
+            }
+            self::drainReady();
+        } finally {
+            self::$ticking = false;
         }
-        //---
     }
 
-    public static function writeEvent($stream) {
-        //---
-        if (static::$writers->contains($stream)) {
-            $gstream = static::$writers->offsetGet($stream);
-            if ($gstream) {
-                if ($gstream->dispatch($stream, static::STREAM_WRITE)) {
-                    static::removeStream($stream, static::STREAM_WRITE);
+    /** Re-evaluate stop state after user timer/idle callbacks before blocking. */
+    private static function poll(int $sec, int $usec): void
+    {
+        if (self::$stop) {
+            return;
+        }
+        $timeout = $sec + $usec / 1e6;
+        foreach (self::$timers as $timer) {
+            $timeout = min($timeout, $timer->remaining());
+        }
+        if (!self::$ready->isEmpty() || !self::hasWork()) {
+            $timeout = 0.0;
+        }
+        self::dispatch((int) $timeout, (int) (($timeout - (int) $timeout) * 1e6));
+    }
+
+    public static function runOnce(int $sec = 0, int $usec = 100000): void
+    {
+        self::getDriver();
+        if (self::$running || self::$ticking) {
+            throw new \LogicException('Nested event loops are not supported');
+        }
+        self::$stop = false;
+        self::tick($sec, $usec);
+    }
+
+    public static function run(int $sec = 0, int $usec = 100000): void
+    {
+        self::getDriver();
+        if (self::$running || self::$ticking) {
+            throw new \LogicException('Nested event loops are not supported');
+        }
+        self::$running = true;
+        self::$stop = false;
+        try {
+            while (!self::$stop && self::hasWork()) {
+                self::tick($sec, $usec);
+            }
+        } finally {
+            self::$running = false;
+        }
+    }
+
+    private static function hasWork(): bool
+    {
+        return !self::$ready->isEmpty() || self::$fibers->count() > 0 || self::$timers->count() > 0
+            || self::$idles->count() > 0 || self::$readers->count() > 1 || self::$writers->count() > 0;
+    }
+
+    private static function hasOperations(): bool
+    {
+        foreach ([self::$readers, self::$writers] as $storage) {
+            if ($storage !== null) {
+                foreach ($storage->toArray(true) as $watcher) {
+                    if ($watcher instanceof GStreamRead || $watcher instanceof GStreamWrite) {
+                        return true;
+                    }
                 }
             }
         }
-        //---
+        return false;
     }
 
-    //--------------------------------------------------------------------------
-
-    public static function runOnce($sec = 0, $usec = 100000) {
-        static::dispatch($sec, $usec);
-        static::handleFibers();
-        static::handleIdles();
+    public static function exit(): void
+    {
+        self::$stop = true;
     }
 
-    public static function run($sec = 0, $usec = 100000) {
-        while (!static::$stop) {
-            static::runOnce($sec, $usec);
-            if (!static::$fibers->count() && !count(static::$idles)) {
-                static::$stop = true;
-                static::NOP();
-            }
+    public static function stop(): void
+    {
+        self::sendCMD('STOP');
+    }
+
+    public static function async(callable $callback, bool $bfiber = true): void
+    {
+        self::getDriver();
+        if (!$bfiber) {
+            self::defer($callback);
+            return;
         }
+        $fiber = new \Fiber(static function () use ($callback): void {
+            try {
+                $callback();
+            } finally {
+                self::$fibers->offsetUnset(\Fiber::getCurrent());
+            }
+        });
+        self::$fibers->offsetSet($fiber);
+        self::defer(static fn () => $fiber->start());
     }
 
-    public static function exit() {
-        static::$stop = true;
-    }
-
-    public static function stop() {
-        static::sendCMD('STOP');
-    }
-
-    private static function handleFibers() {
-        //---
-        $resume = [];
-        //---
-        static::$fibers->rewind();
-        while (static::$fibers->valid()) {
-            $fiber = static::$fibers->current();
-            $queue = static::$fibers->getInfo();
-            if ($queue->count()) {
-                if ($queue->bottom() === false) {
-                    $queue->dequeue();
-                } elseif ($queue->bottom() === null) {
-                    $queue->dequeue();
-                    $resume[] = [[$fiber, 'resume']];
-                } elseif ($queue->bottom()->hasResult()) {
-                    $gstream = $queue->dequeue();
-                    $resume[] = [[$fiber, 'resume'], $gstream->getResult()];
+    private static function operation(mixed $input, ?callable $callback): GOperation
+    {
+        self::getDriver();
+        if ($callback !== null) {
+            return new GOperation($input, static function ($result, ?\Throwable $error) use ($callback): void {
+                if ($error !== null) {
+                    throw $error;
                 }
+                $callback($result);
+            });
+        }
+        $fiber = \Fiber::getCurrent();
+        if ($fiber === null || !self::$fibers->offsetExists($fiber)) {
+            throw new \LogicException('Operation requires a GAsync fiber or a callback');
+        }
+        return new GOperation($input, static function ($result, ?\Throwable $error) use ($fiber): void {
+            if (!$fiber->isSuspended()) {
+                return;
             }
-            static::$fibers->next();
-        }
-        //---
-        foreach ($resume as $arguments) {
-            call_user_func(...$arguments);
-        }
-        //---
+            $error !== null ? $fiber->throw($error) : $fiber->resume($result);
+        });
     }
 
-    private static function addFiber($currentFiber, $assoc) {
-        $queue = null;
-        if (static::$fibers->contains($currentFiber)) {
-            $queue = static::$fibers->offsetGet($currentFiber);
-        } else {
-            $queue = new \SplQueue();
-            static::$fibers->attach($currentFiber, $queue);
+    public static function usleep(int $uxec, ?callable $callback = null): mixed
+    {
+        if ($uxec < 0) {
+            throw new \InvalidArgumentException('Negative sleep duration');
         }
-        $queue->enqueue($assoc);
+        $operation = self::operation(null, $callback);
+        new GTimer($uxec, false, static fn (GTimer $timer, float $elapsed) => $operation->resolve($elapsed));
+        return $callback === null ? \Fiber::suspend() : null;
     }
 
-    private static function removeFiber($currentFiber) {
-        static::$fibers->detach($currentFiber);
+    public static function msleep(int $msec, ?callable $callback = null): mixed
+    {
+        if ($msec < 0 || $msec > intdiv(PHP_INT_MAX, 1000)) {
+            throw new \InvalidArgumentException('Invalid sleep duration');
+        }
+        return self::usleep($msec * 1000, $callback);
     }
 
-    private static function handleIdles() {
-        foreach (static::$idles as $gstream => $callback) {
-            if ($callback) {
-                call_user_func($callback, $gstream);
-            } else {
-                $gstream->idle();
+    public static function sleep(int $sec, ?callable $callback = null): mixed
+    {
+        if ($sec < 0 || $sec > intdiv(PHP_INT_MAX, 1000000)) {
+            throw new \InvalidArgumentException('Invalid sleep duration');
+        }
+        return self::usleep($sec * 1000000, $callback);
+    }
+
+    public static function fopen(string $filename, string $mode, bool $use_include_path = false, $context = null, ?callable $callback = null): mixed
+    {
+        $operation = self::operation(null, $callback);
+        try {
+            $stream = self::io(static fn () => \fopen($filename, $mode, $use_include_path, $context));
+            if ($stream === false) {
+                throw new \RuntimeException('Unable to open stream');
             }
+            stream_set_blocking($stream, false);
+            $operation->resolve($stream);
+        } catch (\Throwable $error) {
+            $operation->resolve(null, $error);
         }
+        return $callback === null ? \Fiber::suspend() : null;
     }
 
-    //--------------------------------------------------------------------------
-
-    public static function async($callback, $bfiber = true) {
-        //---
-        $currentFiber = null;
-        if ($bfiber) {
-            $currentFiber = new \Fiber(function () use ($callback) {
-                        \Fiber::suspend();
-                        call_user_func($callback);
-                        static::removeFiber(\Fiber::getCurrent());
-                    });
-            $currentFiber->start();
-        } else {
-            $currentFiber = new GFiber();
-            $fibercall = function () use ($callback, $currentFiber) {
-                call_user_func($callback);
-                static::removeFiber($currentFiber);
-            };
-            $currentFiber->setCallback($fibercall);
+    private static function streamOperation($stream, mixed $input, int $type, ?callable $callback): mixed
+    {
+        self::assertStream($stream);
+        $mode = stream_get_meta_data($stream)['mode'];
+        $readable = str_contains($mode, 'r') || str_contains($mode, '+');
+        $writable = strpbrk($mode, 'waxc+') !== false;
+        if (($type === self::STREAM_READ && !$readable) || ($type === self::STREAM_WRITE && !$writable)) {
+            throw new \InvalidArgumentException('Stream mode does not support this operation');
         }
-        //---
-        static::addFiber($currentFiber, null);
-        static::NOP();
-        //---
-    }
-
-    //--------------------------------------------------------------------------
-
-    public static function usleep(int $uxec, $callback = null) {
-        //---
-        $currentFiber = null;
-        if (!$callback) {
-            $currentFiber = \Fiber::getCurrent();
-            if (!$currentFiber)
-                throw new \Exception('Not in Fiber');
-        } else {
-            $currentFiber = new GFiber();
-            $fibercall = function (...$args) use ($callback, $currentFiber) {
-                call_user_func($callback, ...$args);
-                static::removeFiber($currentFiber);
-            };
-            $currentFiber->setCallback($fibercall);
-        }
-        //---
-        static::addFiber($currentFiber, new GTimer($uxec, false));
-        //---
-        if (!$callback)
-            return \Fiber::suspend();
-        //---
-    }
-
-    public static function msleep(int $msec, $callback = null) {
-        return static::usleep($msec * 1000, $callback);
-    }
-
-    public static function sleep(int $sec, $callback = null) {
-        return static::usleep($sec * 1000000, $callback);
-    }
-
-    //--------------------------------------------------------------------------
-
-    public static function fopen($filename, $mode, $use_include_path = false, $context = null, $callback = null) {
-        //---
-        $currentFiber = null;
-        if (!$callback) {
-            $currentFiber = \Fiber::getCurrent();
-            if (!$currentFiber)
-                throw new \Exception('Not in Fiber');
-        } else {
-            $currentFiber = new GFiber();
-            $fibercall = function (...$args) use ($callback, $currentFiber) {
-                call_user_func($callback, ...$args);
-                static::removeFiber($currentFiber);
-            };
-            $currentFiber->setCallback($fibercall);
-        }
-        //---
-        $scheme = parse_url($filename, \PHP_URL_SCHEME);
-        if (!$context)
-            $context = stream_context_create();
-        //stream_context_set_option($context, $scheme, 'blocking', false);
-        $stream = fopen($filename, $mode, $use_include_path, $context);
-        if ($stream === false)
-            throw new \Exception('fopen error');
+        $operation = self::operation($input, $callback);
         stream_set_blocking($stream, false);
-        //stream_set_chunk_size($stream, 1024*1024);
-        //---
-        $readMode = strpos($mode, 'r') !== false;
-        $writeMode = strpos($mode, 'w') !== false || strpos($mode, 'a') !== false;
-        $gsmulti = new GStreamMulti($stream);
-        if ($readMode) {
-            $gstreamread = new GStreamRead($stream);
-            static::addStream($stream, static::STREAM_READ, $gstreamread);
-            $gsmulti->addGStream($gstreamread);
+        $storage = $type === self::STREAM_READ ? self::$readers : self::$writers;
+        $watcher = $storage[$stream];
+        $class = $type === self::STREAM_READ ? GStreamRead::class : GStreamWrite::class;
+        if ($watcher !== null && !$watcher instanceof $class) {
+            throw new \LogicException('Stream direction is owned by a different watcher');
         }
-        if ($writeMode) {
-            $gstreamwrite = new GStreamWrite($stream);
-            static::addStream($stream, static::STREAM_WRITE, $gstreamwrite);
-            $gsmulti->addGStream($gstreamwrite);
+        if ($watcher === null) {
+            $watcher = new $class($stream);
+            self::addStream($stream, $type, $watcher);
         }
-        static::addFiber($currentFiber, $gsmulti);
-        //---
-        //static::dispatch(0, 1);
-        //---
-        if (!$callback)
-            return \Fiber::suspend();
-        //---
+        $watcher->enqueue($operation);
+        return $callback === null ? \Fiber::suspend() : null;
     }
 
-    public static function fread($stream, $length, $callback = null) {
-        //---
-        $currentFiber = null;
-        if (!$callback) {
-            $currentFiber = \Fiber::getCurrent();
-            if (!$currentFiber)
-                throw new \Exception('Not in Fiber');
-        } else {
-            $currentFiber = new GFiber();
-            $fibercall = function (...$args) use ($callback, $currentFiber) {
-                call_user_func($callback, ...$args);
-                static::removeFiber($currentFiber);
-            };
-            $currentFiber->setCallback($fibercall);
+    public static function fread($stream, int $length, ?callable $callback = null): mixed
+    {
+        if ($length <= 0) {
+            throw new \InvalidArgumentException('Read length must be positive');
         }
-        //---
-        $gstreamread = static::$readers->offsetGet($stream);
-        $gstreamread->setLength($length);
-        static::addFiber($currentFiber, $gstreamread);
-        //---
-        if (!$callback)
-            return \Fiber::suspend();
-        //---
+        return self::streamOperation($stream, $length, self::STREAM_READ, $callback);
     }
 
-    public static function fwrite($stream, $data, $callback = null) {
-        //---
-        $currentFiber = null;
-        if (!$callback) {
-            $currentFiber = \Fiber::getCurrent();
-            if (!$currentFiber)
-                throw new \Exception('Not in Fiber');
-        } else {
-            $currentFiber = new GFiber();
-            $fibercall = function (...$args) use ($callback, $currentFiber) {
-                call_user_func($callback, ...$args);
-                static::removeFiber($currentFiber);
-            };
-            $currentFiber->setCallback($fibercall);
+    public static function fwrite($stream, string $data, ?callable $callback = null): mixed
+    {
+        return self::streamOperation($stream, $data, self::STREAM_WRITE, $callback);
+    }
+
+    public static function fclose($stream): void
+    {
+        self::assertStream($stream);
+        self::getDriver();
+        foreach ([self::$readers, self::$writers] as $storage) {
+            $watcher = $storage[$stream];
+            if ($watcher instanceof GStreamRead || $watcher instanceof GStreamWrite) {
+                $watcher->cancel(new \RuntimeException('Stream closed with pending operations'));
+            }
         }
-        //---
-        $gstreamwrite = null;
-        if (static::$writers->contains($stream)) {
-            $gstreamwrite = static::$writers->offsetGet($stream);
-            $gstreamwrite->setData($data);
-        } else {
-            $gstreamwrite = new GStreamWrite($stream, true);
-            static::addStream($stream, static::STREAM_WRITE, $gstreamwrite);
-        }
-        $gstreamwrite->setData($data);
-        static::addFiber($currentFiber, $gstreamwrite);
-        //---
-        if (!$callback)
-            return \Fiber::suspend();
-        //---
+        self::removeStream($stream);
+        \fclose($stream);
     }
 
-    public static function fclose($stream) {
-        static::removeStream($stream);
-        fclose($stream);
+    public static function removeIdle(GStream $objStream): void
+    {
+        self::$idles?->offsetUnset($objStream);
     }
 
-    //--------------------------------------------------------------------------
-
-    public static function removeIdle(GStream $objStream) {
-        unset(static::$idles[$objStream]);
+    public static function addIdle(GStream $objStream, ?callable $callback = null): void
+    {
+        self::getDriver();
+        self::$idles[$objStream] = $callback;
     }
 
-    public static function addIdle(GStream $objStream, $callback = null) {
-        static::$idles[$objStream] = $callback;
+    public static function registerTimer(GTimer $timer): void
+    {
+        self::getDriver();
+        self::$timers->offsetSet($timer);
     }
 
-    /*
-
-      public static function addStream($stream, GStream $objStream, int $type, bool $bfiber = false, $callback = null) {
-      //---
-      $currentFiber = null;
-      if ($bfiber) {
-      if (!$callback) {
-      $currentFiber = \Fiber::getCurrent();
-      if (!$currentFiber)
-      throw new \Exception('Not in Fiber');
-      } else {
-      $currentFiber = new GFiber();
-      $fibercall = function (...$args) use ($callback, $currentFiber) {
-      call_user_func($callback, ...$args);
-      static::removeFiber($currentFiber);
-      };
-      $currentFiber->setCallback($fibercall);
-      }
-      }
-      //---
-      static::addStream($stream, $type);
-      //---
-      if ($bfiber) {
-      static::addFiber($currentFiber, $objStream);
-      if (!$callback)
-      return \Fiber::suspend();
-      }
-      //---
-      }
-
-      public function cleanStreamFromFibers($stream) {
-      $obwrite = static::$writers->offsetGet($stream);
-      $objread = static::$readers->offsetGet($stream);
-      if ($obwrite || $objread) {
-      static::$fibers->rewind();
-      while (static::$fibers->valid()) {
-      $fiber = static::$fibers->current();
-      $queue = static::$fibers->getInfo();
-      if ($queue->count()) {
-      $size = $queue->count();
-      for ($i = 0; $i < $size; $i++) {
-      if ($obwrite && $item === $obwrite) {
-      $queue->offsetSet(false);
-      continue;
-      }
-      if ($objread && $item === $objread) {
-      $queue->offsetSet(false);
-      continue;
-      }
-      }
-      }
-      static::$fibers->next();
-      }
-      }
-      }
-
-     */
-
-    //--------------------------------------------------------------------------
+    public static function unregisterTimer(GTimer $timer): void
+    {
+        self::$timers?->offsetUnset($timer);
+    }
 }
